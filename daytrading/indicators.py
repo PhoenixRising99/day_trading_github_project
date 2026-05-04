@@ -4,9 +4,49 @@ import numpy as np
 import pandas as pd
 
 
+REQUIRED_OHLCV_COLUMNS = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
+
+
+def _validate_input_frame(df: pd.DataFrame) -> None:
+    """Fail early with a useful message if upstream data changed shape."""
+    missing = [c for c in REQUIRED_OHLCV_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "Input market-data frame is missing required columns: "
+            f"{missing}. Available columns: {list(df.columns)}"
+        )
+
+
+
+def _apply_per_symbol(df: pd.DataFrame, func) -> pd.DataFrame:
+    """
+    Apply a transformation to each symbol without relying on groupby.apply
+    preserving grouping columns.
+
+    This is intentionally written as an explicit concat because pandas 3.x
+    changed groupby/apply behavior enough that the prior version could lose
+    the `symbol` column after apply(), which later caused KeyError: 'symbol'.
+    """
+    parts: list[pd.DataFrame] = []
+
+    for symbol, group in df.groupby("symbol", sort=False, group_keys=False):
+        out = func(group.copy())
+        if "symbol" not in out.columns:
+            out["symbol"] = symbol
+        parts.append(out)
+
+    if not parts:
+        return pd.DataFrame(columns=df.columns)
+
+    return pd.concat(parts, ignore_index=False)
+
+
+
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Add V9/V10/V11 indicator set used by the frozen paper strategy."""
     df = df.copy()
+    _validate_input_frame(df)
+
     df = df.sort_values(["symbol", "timestamp"])
     df["date"] = df["timestamp"].dt.date
 
@@ -57,12 +97,13 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         g["close_prev_2"] = g["close"].shift(2)
         return g
 
-    df = df.groupby("symbol", group_keys=False).apply(per_symbol)
+    df = _apply_per_symbol(df, per_symbol)
+    _validate_input_frame(df)
 
     typical_price = (df["high"] + df["low"] + df["close"]) / 3
     df["tpv"] = typical_price * df["volume"]
-    df["cum_tpv"] = df.groupby(["symbol", "date"])["tpv"].cumsum()
-    df["cum_vol"] = df.groupby(["symbol", "date"])["volume"].cumsum()
+    df["cum_tpv"] = df.groupby(["symbol", "date"], sort=False)["tpv"].cumsum()
+    df["cum_vol"] = df.groupby(["symbol", "date"], sort=False)["volume"].cumsum()
     df["vwap"] = df["cum_tpv"] / df["cum_vol"].replace(0, np.nan)
 
     def add_vwap_structure(g: pd.DataFrame) -> pd.DataFrame:
@@ -82,7 +123,9 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
         g["vwap_slope_3"] = g["vwap"] - g["vwap_prev_3"]
         return g
 
-    df = df.groupby("symbol", group_keys=False).apply(add_vwap_structure)
+    df = _apply_per_symbol(df, add_vwap_structure)
+    _validate_input_frame(df)
+
     df["vwap_distance_atr"] = (df["close"] - df["vwap"]) / df["atr_14"].replace(0, np.nan)
 
     spy_context = (

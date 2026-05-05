@@ -3,10 +3,8 @@ name: Paper Observation Scan
 on:
   workflow_dispatch:
 
-  # V9/V10/V11 entry window: 10:15 AM - 10:59 AM Eastern.
-  # This runs every 5 minutes from 10:16 through 10:56 AM ET, Monday-Friday.
   schedule:
-    - cron: "16-56/5 10 * * 1-5"
+    - cron: "11-56/5 10 * * 1-5"
       timezone: "America/New_York"
 
 permissions:

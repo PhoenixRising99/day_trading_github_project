@@ -4,13 +4,24 @@ import argparse
 import json
 import os
 import sys
+import time
+from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
 from typing import Any
 from urllib import request
 
 import pandas as pd
+from zoneinfo import ZoneInfo
 
-from daytrading.config import CONFIG, STRATEGY_PARAMS, WATCHLIST
+from daytrading.config import (
+    CONFIG,
+    ENTRY_END_HOUR,
+    ENTRY_END_MINUTE,
+    ENTRY_START_HOUR,
+    ENTRY_START_MINUTE,
+    STRATEGY_PARAMS,
+    WATCHLIST,
+)
 from daytrading.paper import (
     append_active_paper_signals_to_journal,
     initialize_paper_journal,
@@ -46,13 +57,34 @@ def _json_default(value: Any) -> str:
     return str(value)
 
 
+def market_tz() -> ZoneInfo:
+    return ZoneInfo(CONFIG.timezone)
+
+
+def today_entry_start_end() -> tuple[datetime, datetime]:
+    tz = market_tz()
+    now = datetime.now(tz)
+    start = datetime.combine(
+        now.date(),
+        dtime(ENTRY_START_HOUR, ENTRY_START_MINUTE),
+        tzinfo=tz,
+    )
+    end = datetime.combine(
+        now.date(),
+        dtime(ENTRY_END_HOUR, ENTRY_END_MINUTE),
+        tzinfo=tz,
+    )
+    return start, end
+
+
+def seconds_until(target: datetime) -> float:
+    return max(0.0, (target - datetime.now(target.tzinfo)).total_seconds())
+
+
 def send_discord_alert(active_signals: pd.DataFrame, journal_rows_added: int) -> None:
     """Send a Discord webhook alert only when active signals exist."""
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    if not webhook_url:
-        return
-
-    if active_signals.empty:
+    if not webhook_url or active_signals.empty:
         return
 
     lines = [
@@ -120,37 +152,24 @@ def write_github_step_summary(scan: pd.DataFrame, status: pd.DataFrame, output_s
     Path(summary_file).write_text("\n".join(lines), encoding="utf-8")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Run one cloud-safe paper-observation scan. No brokerage connection. No live trading."
-    )
-    parser.add_argument("--period", default=CONFIG.period, help="yfinance period, e.g. 5d")
-    parser.add_argument("--notes", default="github-actions paper observation", help="Journal note")
-    parser.add_argument(
-        "--require-current-entry-window",
-        action="store_true",
-        help="Skip scan if the GitHub job itself is not currently inside the entry window.",
-    )
-    args = parser.parse_args()
-
-    if args.require_current_entry_window and not is_entry_window_now(CONFIG.timezone):
-        print("Current time is outside the configured entry window. Exiting without scan.")
-        return 0
-
+def run_one_scan(period: str, notes: str) -> tuple[pd.DataFrame, pd.DataFrame, Path, int]:
+    """Run one scan, save outputs, append active signals to the paper journal."""
     initialize_paper_journal(journal_path(), overwrite=False)
 
-    scan = paper_scan(WATCHLIST, CONFIG, period=args.period, strategy_params=STRATEGY_PARAMS)
+    scan = paper_scan(WATCHLIST, CONFIG, period=period, strategy_params=STRATEGY_PARAMS)
     timestamp_tag = pd.Timestamp.now(tz=CONFIG.timezone).strftime("%Y%m%d_%H%M%S")
     output_scan_path = scans_dir() / f"paper_signal_preview_{timestamp_tag}.csv"
     scan.to_csv(output_scan_path, index=False)
 
     active = scan[scan["signal"] == True].copy()  # noqa: E712
-    rows_added = append_active_paper_signals_to_journal(active, journal_path(), notes=args.notes)
+    rows_added = append_active_paper_signals_to_journal(active, journal_path(), notes=notes)
+
     status = paper_trading_status_report(journal_path())
     status_path = scans_dir() / f"paper_journal_status_{timestamp_tag}.csv"
     status.to_csv(status_path, index=False)
 
     print("Paper observation scan completed.")
+    print(f"Current ET time: {pd.Timestamp.now(tz=CONFIG.timezone)}")
     print(f"Watchlist: {WATCHLIST}")
     print(f"Scan output: {output_scan_path}")
     print(f"Journal path: {journal_path()}")
@@ -166,11 +185,107 @@ def main() -> int:
 
     write_github_step_summary(scan, status, output_scan_path)
 
-    # Machine-readable outputs for downstream steps if needed.
+    return scan, status, output_scan_path, rows_added
+
+
+def run_waiting_scan_loop(period: str, notes: str, scan_every_seconds: int) -> tuple[int, int, str]:
+    """
+    Wait until the configured entry window, scan repeatedly during the window,
+    then exit.
+
+    This is more reliable than asking GitHub Actions to start every 5 minutes
+    exactly inside a narrow trading window.
+    """
+    tz = market_tz()
+    start, end = today_entry_start_end()
+    now = datetime.now(tz)
+
+    print(f"Workflow started at: {now:%Y-%m-%d %H:%M:%S %Z}")
+    print(f"Configured entry window: {start:%Y-%m-%d %H:%M:%S %Z} to {end:%Y-%m-%d %H:%M:%S %Z}")
+    print(f"Scan interval: {scan_every_seconds} seconds")
+
+    if now > end:
+        msg = "Started after the entry window closed. Exiting without scan."
+        print(msg)
+        return 0, 0, msg
+
+    if now < start:
+        wait_seconds = seconds_until(start)
+        print(f"Waiting {wait_seconds:.0f} seconds until entry window opens.")
+        time.sleep(wait_seconds)
+
+    scans_completed = 0
+    total_rows_added = 0
+
+    while datetime.now(tz) <= end:
+        scan, status, output_scan_path, rows_added = run_one_scan(period=period, notes=notes)
+        scans_completed += 1
+        total_rows_added += rows_added
+
+        now = datetime.now(tz)
+        next_run = now + timedelta(seconds=scan_every_seconds)
+
+        if next_run > end:
+            print("Next scan would occur after the entry window. Stopping.")
+            break
+
+        sleep_seconds = seconds_until(next_run)
+        print(f"Sleeping {sleep_seconds:.0f} seconds until next scan.")
+        time.sleep(sleep_seconds)
+
+    msg = f"Finished entry-window scan loop. Scans completed: {scans_completed}. Rows added: {total_rows_added}."
+    print(msg)
+    return scans_completed, total_rows_added, msg
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Run cloud-safe paper-observation scans. No brokerage connection. No live trading."
+    )
+    parser.add_argument("--period", default=CONFIG.period, help="yfinance period, e.g. 5d")
+    parser.add_argument("--notes", default="github-actions paper observation", help="Journal note")
+    parser.add_argument(
+        "--require-current-entry-window",
+        action="store_true",
+        help="Skip scan if the GitHub job itself is not currently inside the entry window.",
+    )
+    parser.add_argument(
+        "--wait-for-entry-window",
+        action="store_true",
+        help="Wait until the configured entry window, then scan repeatedly until the window closes.",
+    )
+    parser.add_argument(
+        "--scan-every-seconds",
+        type=int,
+        default=300,
+        help="Scan interval for --wait-for-entry-window mode. Default: 300 seconds.",
+    )
+    args = parser.parse_args()
+
+    if args.wait_for_entry_window:
+        scans_completed, rows_added, _ = run_waiting_scan_loop(
+            period=args.period,
+            notes=args.notes,
+            scan_every_seconds=args.scan_every_seconds,
+        )
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as fh:
+                fh.write(f"scans_completed={scans_completed}\n")
+                fh.write(f"rows_added={rows_added}\n")
+        return 0
+
+    if args.require_current_entry_window and not is_entry_window_now(CONFIG.timezone):
+        print("Current time is outside the configured entry window. Exiting without scan.")
+        return 0
+
+    scan, status, output_scan_path, rows_added = run_one_scan(period=args.period, notes=args.notes)
+
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
+        active = int(scan["signal"].sum()) if "signal" in scan else 0
         with open(github_output, "a", encoding="utf-8") as fh:
-            fh.write(f"active_signals={len(active)}\n")
+            fh.write(f"active_signals={active}\n")
             fh.write(f"rows_added={rows_added}\n")
             fh.write(f"scan_path={output_scan_path}\n")
 

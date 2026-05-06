@@ -3,15 +3,14 @@ name: Paper Observation Scan
 on:
   workflow_dispatch:
 
-  # Robust schedule:
-  # Start before the strategy window and let Python wait/scan during the window.
-  # V9/V10/V11 entry window: 10:15 AM - 10:59 AM Eastern.
+  # More reliable schedule for a narrow market window:
+  # Queue the workflow at 8:00 AM ET and let Python wait until the
+  # strategy entry window: 10:15 AM - 10:59 AM ET.
   #
-  # This queues once at 9:00 AM ET, Monday-Friday.
-  # If GitHub Actions starts late, the Python script still has a better chance
-  # of being alive during 10:15-10:59 AM ET.
+  # This is intentionally earlier than the window because GitHub scheduled
+  # workflows can start late under load.
   schedule:
-    - cron: "0 9 * * 1-5"
+    - cron: "0 8 * * 1-5"
       timezone: "America/New_York"
 
 permissions:
@@ -19,6 +18,7 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 concurrency:
   group: paper-observation-scan
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   paper-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 240
 
     steps:
       - name: Check out repository

@@ -49,6 +49,66 @@ PAPER_JOURNAL_COLUMNS = [
 ]
 
 
+def _interval_to_timedelta(interval: str) -> pd.Timedelta:
+    interval = str(interval).strip().lower()
+    if interval.endswith("m"):
+        return pd.Timedelta(minutes=int(interval[:-1]))
+    if interval.endswith("h"):
+        return pd.Timedelta(hours=int(interval[:-1]))
+    if interval.endswith("d"):
+        return pd.Timedelta(days=int(interval[:-1]))
+    raise ValueError(f"Unsupported interval for paper scan timing: {interval}")
+
+
+def _latest_completed_rows(
+    data: pd.DataFrame,
+    config: TradingConfig,
+    min_volume: float = 1,
+) -> pd.DataFrame:
+    """
+    Select the latest completed candle for each symbol.
+
+    Why this exists:
+    yfinance often exposes the just-opened/current 5-minute candle with zero
+    volume or a zero high/low range. Evaluating that row creates false
+    `missing_indicator` rejections because close_location/volume-derived
+    indicators can be invalid.
+
+    For 5-minute data at 10:20:02, the current candle is timestamped 10:20.
+    The latest completed candle is usually 10:15, so this function filters out
+    bars with timestamp >= current 5-minute floor.
+    """
+    if data.empty:
+        return data
+
+    now_et = pd.Timestamp.now(tz=config.timezone)
+    interval_td = _interval_to_timedelta(config.interval)
+    floor_freq = f"{int(interval_td.total_seconds() // 60)}min"
+    current_bar_start = now_et.floor(floor_freq)
+
+    candidates = data[data["timestamp"] < current_bar_start].copy()
+
+    # Avoid zero-volume placeholder bars when the free data source exposes them.
+    if "volume" in candidates.columns:
+        candidates = candidates[candidates["volume"] >= min_volume].copy()
+
+    if candidates.empty:
+        # Return the latest available rows so the CSV still explains what happened.
+        return (
+            data.sort_values(["symbol", "timestamp"])
+            .groupby("symbol", as_index=False)
+            .tail(1)
+            .copy()
+        )
+
+    return (
+        candidates.sort_values(["symbol", "timestamp"])
+        .groupby("symbol", as_index=False)
+        .tail(1)
+        .copy()
+    )
+
+
 def paper_scan(
     symbols: Iterable[str] = WATCHLIST,
     config: TradingConfig = CONFIG,
@@ -63,12 +123,7 @@ def paper_scan(
     )
     data = add_indicators(data)
 
-    latest_rows = (
-        data.sort_values(["symbol", "timestamp"])
-        .groupby("symbol", as_index=False)
-        .tail(1)
-        .copy()
-    )
+    latest_rows = _latest_completed_rows(data, config).copy()
 
     previews = []
     scan_timestamp = pd.Timestamp.now(tz=config.timezone)

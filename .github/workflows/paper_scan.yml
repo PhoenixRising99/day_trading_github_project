@@ -10,7 +10,7 @@ on:
   # This is intentionally earlier than the window because GitHub scheduled
   # workflows can start late under load.
   schedule:
-    - cron: "0 5 * * 1-5"
+    - cron: "0 7 * * 1-5"
       timezone: "America/New_York"
 
 permissions:

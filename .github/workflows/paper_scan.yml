@@ -3,15 +3,20 @@ name: Paper Observation Scan
 on:
   workflow_dispatch:
 
-  # More reliable schedule for a narrow market window:
-  # Queue the workflow at 8:00 AM ET and let Python wait until the
-  # strategy entry window: 10:15 AM - 10:59 AM ET.
+  # GitHub Actions cron is UTC.
   #
-  # This is intentionally earlier than the window because GitHub scheduled
-  # workflows can start late under load.
+  # Entry collector:
+  # - 12:00 UTC = 8:00 AM ET during daylight time / 7:00 AM ET during standard time.
+  # - Python waits until the strategy entry window: 10:15-10:59 AM ET.
+  #
+  # Exit monitor:
+  # - Every 15 minutes from 15:00-21:45 UTC.
+  # - During daylight time this roughly covers 11:00 AM-5:45 PM ET.
+  # - During standard time this roughly covers 10:00 AM-4:45 PM ET.
+  # - Python decides whether to scan entries or update exits based on New York time.
   schedule:
-    - cron: "0 7 * * 1-5"
-      timezone: "America/New_York"
+    - cron: "0 12 * * 1-5"
+    - cron: "*/15 15-21 * * 1-5"
 
 permissions:
   contents: write
@@ -27,7 +32,7 @@ concurrency:
 jobs:
   paper-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 230
 
     steps:
       - name: Check out repository
@@ -46,15 +51,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run paper scanner during entry window
+      - name: Run paper scanner / exit tracker
         id: scan
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python paper_scan_job.py \
+            --mode auto \
             --period 5d \
             --notes "github-actions paper observation" \
-            --wait-for-entry-window \
             --scan-every-seconds 300
 
       - name: Upload scan outputs

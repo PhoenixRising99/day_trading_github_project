@@ -140,8 +140,9 @@ def _normalize_journal(journal: pd.DataFrame) -> pd.DataFrame:
     """
     Backward-compatible journal normalizer.
 
-    Older journal files did not have signal_date, trade_status, or return columns.
-    This function adds them without deleting prior data.
+    Older journal files may contain signal-only rows that were created before
+    auto paper-entry/exit tracking existed. Those rows should not be counted as
+    closed trades unless they have a real paper exit and P/L.
     """
     journal = journal.copy()
 
@@ -156,15 +157,35 @@ def _normalize_journal(journal: pd.DataFrame) -> pd.DataFrame:
                 missing_signal_date, "data_timestamp"
             ].map(lambda x: _signal_date(x) if pd.notna(x) and str(x).strip() else "")
 
-        missing_status = journal["trade_status"].astype(str).str.strip().eq("")
-        has_exit = journal["paper_exit_time"].astype(str).str.strip().ne("")
-        has_entry = journal["paper_entry_time"].astype(str).str.strip().ne("") | journal[
-            "paper_entry_price"
-        ].astype(str).str.strip().ne("")
+        status = journal["trade_status"].astype(str).str.lower().str.strip()
+        has_exit_time = journal["paper_exit_time"].astype(str).str.strip().ne("")
+        has_exit_price = journal["paper_exit_price"].astype(str).str.strip().ne("")
+        has_pnl = journal["paper_pnl"].astype(str).str.strip().ne("")
+        has_exit = has_exit_time | has_exit_price | has_pnl
 
+        has_entry_time = journal["paper_entry_time"].astype(str).str.strip().ne("")
+        has_entry_price = journal["paper_entry_price"].astype(str).str.strip().ne("")
+        has_entry = has_entry_time | has_entry_price
+
+        missing_status = status.eq("") | status.eq("nan")
+
+        # Repair older rows that were marked closed without an entry, exit, or P/L.
+        # These are historical signal candidates, not completed paper trades.
+        invalid_closed = status.eq("closed") & ~has_exit
+        if invalid_closed.any():
+            journal.loc[invalid_closed, "trade_status"] = "legacy_signal_only"
+            manual = journal["manual_decision"].astype(str).str.lower().str.strip()
+            journal.loc[
+                invalid_closed & (manual.eq("") | manual.eq("nan") | manual.eq("pending_review")),
+                "manual_decision",
+            ] = "legacy_no_auto_entry"
+
+        # Assign statuses to rows from older journal formats.
+        status = journal["trade_status"].astype(str).str.lower().str.strip()
+        missing_status = status.eq("") | status.eq("nan")
         journal.loc[missing_status & has_exit, "trade_status"] = "closed"
         journal.loc[missing_status & has_entry & ~has_exit, "trade_status"] = "open"
-        journal.loc[missing_status & ~has_entry & ~has_exit, "trade_status"] = "pending_review"
+        journal.loc[missing_status & ~has_entry & ~has_exit, "trade_status"] = "legacy_signal_only"
 
     return journal[PAPER_JOURNAL_COLUMNS]
 
@@ -536,6 +557,7 @@ def paper_trading_status_report(journal_path: Path) -> pd.DataFrame:
                     "rows": 0,
                     "open_trades": 0,
                     "closed_trades": 0,
+                    "legacy_signal_rows": 0,
                     "completed_trades": 0,
                     "total_paper_pnl": 0.0,
                 }
@@ -551,6 +573,7 @@ def paper_trading_status_report(journal_path: Path) -> pd.DataFrame:
                     "rows": 0,
                     "open_trades": 0,
                     "closed_trades": 0,
+                    "legacy_signal_rows": 0,
                     "completed_trades": 0,
                     "total_paper_pnl": 0.0,
                 }
@@ -568,6 +591,7 @@ def paper_trading_status_report(journal_path: Path) -> pd.DataFrame:
                 "rows": len(journal),
                 "open_trades": int(status.eq("open").sum()),
                 "closed_trades": int(status.eq("closed").sum()),
+                "legacy_signal_rows": int(status.eq("legacy_signal_only").sum()),
                 "completed_trades": int(completed),
                 "winning_paper_trades": int((pnl > 0).sum()),
                 "losing_paper_trades": int((pnl <= 0).sum()),

@@ -136,13 +136,28 @@ def _latest_completed_rows(
     )
 
 
+def _value_is_filled(value) -> bool:
+    """Return True when a CSV-loaded journal value contains real data."""
+    if pd.isna(value):
+        return False
+
+    value_text = str(value).strip()
+    return value_text not in {"", "nan", "NaN", "NaT", "None", "none", "null", "NULL"}
+
+
+def _series_is_filled(series: pd.Series) -> pd.Series:
+    return series.map(_value_is_filled)
+
+
 def _normalize_journal(journal: pd.DataFrame) -> pd.DataFrame:
     """
     Backward-compatible journal normalizer.
 
-    Older journal files may contain signal-only rows that were created before
-    auto paper-entry/exit tracking existed. Those rows should not be counted as
-    closed trades unless they have a real paper exit and P/L.
+    Older journal files may contain rows that were signal-only candidates from
+    before auto paper-entry tracking existed. Those rows can have
+    trade_status='closed' even though they have no entry, exit, or P/L. This
+    function repairs those rows to legacy_signal_only so status counts are not
+    misleading.
     """
     journal = journal.copy()
 
@@ -151,43 +166,53 @@ def _normalize_journal(journal: pd.DataFrame) -> pd.DataFrame:
             journal[col] = ""
 
     if not journal.empty:
-        missing_signal_date = journal["signal_date"].astype(str).str.strip().eq("")
+        missing_signal_date = journal["signal_date"].astype(str).str.strip().isin(["", "nan", "NaN"])
         if missing_signal_date.any() and "data_timestamp" in journal.columns:
             journal.loc[missing_signal_date, "signal_date"] = journal.loc[
                 missing_signal_date, "data_timestamp"
-            ].map(lambda x: _signal_date(x) if pd.notna(x) and str(x).strip() else "")
+            ].map(lambda x: _signal_date(x) if _value_is_filled(x) else "")
 
         status = journal["trade_status"].astype(str).str.lower().str.strip()
-        has_exit_time = journal["paper_exit_time"].astype(str).str.strip().ne("")
-        has_exit_price = journal["paper_exit_price"].astype(str).str.strip().ne("")
-        has_pnl = journal["paper_pnl"].astype(str).str.strip().ne("")
-        has_exit = has_exit_time | has_exit_price | has_pnl
 
-        has_entry_time = journal["paper_entry_time"].astype(str).str.strip().ne("")
-        has_entry_price = journal["paper_entry_price"].astype(str).str.strip().ne("")
-        has_entry = has_entry_time | has_entry_price
+        has_entry = _series_is_filled(journal["paper_entry_time"]) | _series_is_filled(
+            journal["paper_entry_price"]
+        )
+        has_exit = _series_is_filled(journal["paper_exit_time"]) | _series_is_filled(
+            journal["paper_exit_price"]
+        )
+        has_pnl = _series_is_filled(journal["paper_pnl"])
 
-        missing_status = status.eq("") | status.eq("nan")
+        # Repair legacy rows created before the auto-entry/auto-exit journal
+        # model. These rows are valid historical signals, not closed trades.
+        legacy_signal_only = (
+            status.isin(["closed", "pending_review", "", "nan"])
+            & ~has_entry
+            & ~has_exit
+            & ~has_pnl
+        )
+        journal.loc[legacy_signal_only, "trade_status"] = "legacy_signal_only"
 
-        # Repair older rows that were marked closed without an entry, exit, or P/L.
-        # These are historical signal candidates, not completed paper trades.
-        invalid_closed = status.eq("closed") & ~has_exit
-        if invalid_closed.any():
-            journal.loc[invalid_closed, "trade_status"] = "legacy_signal_only"
-            manual = journal["manual_decision"].astype(str).str.lower().str.strip()
-            journal.loc[
-                invalid_closed & (manual.eq("") | manual.eq("nan") | manual.eq("pending_review")),
-                "manual_decision",
-            ] = "legacy_no_auto_entry"
+        manual_text = journal["manual_decision"].astype(str).str.lower().str.strip()
+        missing_or_old_manual = manual_text.isin(["", "nan", "pending_review"])
+        journal.loc[
+            legacy_signal_only & missing_or_old_manual,
+            "manual_decision",
+        ] = "legacy_no_auto_entry"
 
-        # Assign statuses to rows from older journal formats.
+        # Fill missing statuses for newer rows.
         status = journal["trade_status"].astype(str).str.lower().str.strip()
-        missing_status = status.eq("") | status.eq("nan")
+        missing_status = status.isin(["", "nan"])
+
         journal.loc[missing_status & has_exit, "trade_status"] = "closed"
         journal.loc[missing_status & has_entry & ~has_exit, "trade_status"] = "open"
         journal.loc[missing_status & ~has_entry & ~has_exit, "trade_status"] = "legacy_signal_only"
 
+        # If an open trade later has an exit/P&L, normalize it to closed.
+        status = journal["trade_status"].astype(str).str.lower().str.strip()
+        journal.loc[status.eq("open") & (has_exit | has_pnl), "trade_status"] = "closed"
+
     return journal[PAPER_JOURNAL_COLUMNS]
+
 
 
 def read_paper_journal(journal_path: Path) -> pd.DataFrame:
@@ -559,7 +584,11 @@ def paper_trading_status_report(journal_path: Path) -> pd.DataFrame:
                     "closed_trades": 0,
                     "legacy_signal_rows": 0,
                     "completed_trades": 0,
+                    "winning_paper_trades": 0,
+                    "losing_paper_trades": 0,
+                    "paper_win_rate": np.nan,
                     "total_paper_pnl": 0.0,
+                    "avg_paper_pnl": np.nan,
                 }
             ]
         )
@@ -575,24 +604,32 @@ def paper_trading_status_report(journal_path: Path) -> pd.DataFrame:
                     "closed_trades": 0,
                     "legacy_signal_rows": 0,
                     "completed_trades": 0,
+                    "winning_paper_trades": 0,
+                    "losing_paper_trades": 0,
+                    "paper_win_rate": np.nan,
                     "total_paper_pnl": 0.0,
+                    "avg_paper_pnl": np.nan,
                 }
             ]
         )
 
     status = journal["trade_status"].astype(str).str.lower().str.strip()
     pnl = pd.to_numeric(journal.get("paper_pnl", pd.Series(dtype=float)), errors="coerce")
-    completed = pnl.notna().sum()
+
+    open_count = int(status.eq("open").sum())
+    completed = int(pnl.notna().sum())
+    closed_count = int((status.eq("closed") & pnl.notna()).sum())
+    legacy_count = int(status.eq("legacy_signal_only").sum())
 
     return pd.DataFrame(
         [
             {
                 "journal_exists": True,
                 "rows": len(journal),
-                "open_trades": int(status.eq("open").sum()),
-                "closed_trades": int(status.eq("closed").sum()),
-                "legacy_signal_rows": int(status.eq("legacy_signal_only").sum()),
-                "completed_trades": int(completed),
+                "open_trades": open_count,
+                "closed_trades": closed_count,
+                "legacy_signal_rows": legacy_count,
+                "completed_trades": completed,
                 "winning_paper_trades": int((pnl > 0).sum()),
                 "losing_paper_trades": int((pnl <= 0).sum()),
                 "paper_win_rate": float((pnl > 0).sum() / completed) if completed else np.nan,

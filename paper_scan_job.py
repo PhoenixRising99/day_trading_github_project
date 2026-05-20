@@ -347,10 +347,12 @@ def run_auto_mode(period: str, notes: str, scan_every_seconds: int) -> tuple[int
     """
     Decide what to do based on current New York time.
 
-    - Before entry window: wait, then run entry scans until 10:59 ET.
-    - During entry window: run one entry scan.
-    - After entry window through market close: update open paper exits.
-    - After market close: run one final exit update.
+    Corrected behavior:
+    - Before entry window: wait, then run the entry-loop until 10:59 ET.
+    - During entry window: also run the entry-loop until 10:59 ET.
+      This matters when GitHub starts the scheduled job late; the old behavior
+      only ran one scan if the job started inside the entry window.
+    - After entry window: update open paper exits only.
     """
     tz = market_tz()
     now = datetime.now(tz)
@@ -361,7 +363,7 @@ def run_auto_mode(period: str, notes: str, scan_every_seconds: int) -> tuple[int
     print(f"Entry window: {start:%Y-%m-%d %H:%M:%S %Z} to {end:%Y-%m-%d %H:%M:%S %Z}")
     print(f"Market close reference: {close:%Y-%m-%d %H:%M:%S %Z}")
 
-    if now < start:
+    if now <= end:
         scans_completed, rows_added, _ = run_waiting_entry_loop(
             period=period,
             notes=notes,
@@ -369,14 +371,11 @@ def run_auto_mode(period: str, notes: str, scan_every_seconds: int) -> tuple[int
         )
         return scans_completed, rows_added
 
-    if start <= now <= end:
-        _, _, _, rows_added = run_entry_scan(period=period, notes=notes)
-        return 1, rows_added
-
     # After entry window: do not create new entries. Only manage exits.
     exit_updates, status, exit_path = run_exit_update(period=period)
     write_github_step_summary(None, status, None, exit_updates=exit_updates)
     return 0, len(exit_updates)
+
 
 
 def main() -> int:

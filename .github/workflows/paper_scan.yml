@@ -3,18 +3,22 @@ name: Paper Observation Scan
 on:
   workflow_dispatch:
 
-  # GitHub Actions cron is UTC.
+  # GitHub Actions cron runs in UTC.
   #
-  # Entry collector:
-  # - 12:00 UTC = 8:00 AM ET during daylight time / 7:00 AM ET during standard time.
-  # - Python waits until the strategy entry window: 10:15-10:59 AM ET.
+  # Entry collector backup starts:
+  # - 11:15 UTC = 7:15 AM ET during U.S. daylight time.
+  # - 12:00 UTC = 8:00 AM ET during U.S. daylight time.
+  #
+  # The Python script uses New York time and waits/scans until the strategy
+  # window closes at 10:59 AM ET. The duplicate schedules are intentional:
+  # if one scheduled run is delayed or dropped, the other gives us a second
+  # chance. The concurrency group prevents overlapping runs.
   #
   # Exit monitor:
   # - Every 15 minutes from 15:00-21:45 UTC.
-  # - During daylight time this roughly covers 11:00 AM-5:45 PM ET.
-  # - During standard time this roughly covers 10:00 AM-4:45 PM ET.
-  # - Python decides whether to scan entries or update exits based on New York time.
+  # - Python updates open paper trades only after the entry window closes.
   schedule:
+    - cron: "15 11 * * 1-5"
     - cron: "0 12 * * 1-5"
     - cron: "*/15 15-21 * * 1-5"
 

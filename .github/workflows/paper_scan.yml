@@ -3,22 +3,17 @@ name: Paper Observation Scan
 on:
   workflow_dispatch:
 
-  # GitHub Actions cron runs in UTC.
+  # GitHub Actions cron runs in UTC in this workflow.
   #
-  # Entry collector backup starts:
-  # - 11:15 UTC = 7:15 AM ET during U.S. daylight time.
+  # Entry collector:
   # - 12:00 UTC = 8:00 AM ET during U.S. daylight time.
-  #
-  # The Python script uses New York time and waits/scans until the strategy
-  # window closes at 10:59 AM ET. The duplicate schedules are intentional:
-  # if one scheduled run is delayed or dropped, the other gives us a second
-  # chance. The concurrency group prevents overlapping runs.
+  # - Python waits/scans until the strategy window closes at 10:59 AM ET.
+  # - Only one entry collector is scheduled to avoid stale-journal race conditions.
   #
   # Exit monitor:
   # - Every 15 minutes from 15:00-21:45 UTC.
   # - Python updates open paper trades only after the entry window closes.
   schedule:
-    - cron: "15 11 * * 1-5"
     - cron: "0 12 * * 1-5"
     - cron: "*/15 15-21 * * 1-5"
 
@@ -79,6 +74,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash || true
           git add data/logs/paper_trading/paper_trade_journal.csv
           if git diff --cached --quiet; then
             echo "No journal changes to commit."

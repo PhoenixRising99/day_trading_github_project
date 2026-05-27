@@ -5,12 +5,22 @@ on:
     inputs:
       confirm:
         description: "Type SUBMIT_ALPACA_PAPER_STRATEGY_ORDER to submit a paper bracket order"
-        required: true
+        required: false
         default: ""
       allow_outside_entry_window:
-        description: "Testing only. true lets the job scan/submit outside the strategy entry window."
+        description: "Testing only. true lets the manual job scan/submit outside the strategy entry window."
         required: true
         default: "false"
+      mode:
+        description: "single or loop"
+        required: true
+        default: "single"
+
+  # Automatic Alpaca paper-entry loop.
+  # GitHub cron is UTC. 12:00 UTC is 8:00 AM ET during daylight time
+  # and 7:00 AM ET during standard time. Python waits until 10:15 AM ET.
+  schedule:
+    - cron: "0 12 * * 1-5"
 
 permissions:
   contents: read
@@ -21,10 +31,14 @@ env:
   ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
   ALPACA_PAPER: "true"
 
+concurrency:
+  group: alpaca-paper-strategy-entry
+  cancel-in-progress: false
+
 jobs:
   alpaca-paper-strategy-entry:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 235
 
     steps:
       - name: Check out repository
@@ -42,14 +56,33 @@ jobs:
           pip install -r requirements.txt
 
       - name: Submit paper strategy order if a signal exists
+        env:
+          CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
+          ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT: ${{ github.event.inputs.allow_outside_entry_window }}
+          MODE_INPUT: ${{ github.event.inputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          CONFIRM_VALUE="$CONFIRM_INPUT"
+          MODE_VALUE="$MODE_INPUT"
           EXTRA_ARGS=""
-          if [ "${{ inputs.allow_outside_entry_window }}" = "true" ]; then
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            CONFIRM_VALUE="SUBMIT_ALPACA_PAPER_STRATEGY_ORDER"
+            MODE_VALUE="loop"
+          fi
+
+          if [ -z "$MODE_VALUE" ]; then
+            MODE_VALUE="single"
+          fi
+
+          if [ "$ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT" = "true" ]; then
             EXTRA_ARGS="--allow-outside-entry-window"
           fi
 
           python alpaca_paper_strategy_entry_job.py \
-            --confirm "${{ inputs.confirm }}" \
+            --mode "$MODE_VALUE" \
+            --confirm "$CONFIRM_VALUE" \
+            --scan-every-seconds 300 \
             $EXTRA_ARGS
 
       - name: Upload broker strategy artifacts

@@ -83,6 +83,64 @@ def today_market_close() -> datetime:
     now = datetime.now(tz)
     return datetime.combine(now.date(), dtime(16, 0), tzinfo=tz)
 
+# Full-day U.S. equity-market holidays for 2026.
+# This is intentionally explicit so the GitHub runner can skip obvious closed
+# sessions before waiting for the entry window.
+MARKET_FULL_DAY_HOLIDAYS_2026 = {
+    "2026-01-01": "New Year's Day",
+    "2026-01-19": "Martin Luther King Jr. Day",
+    "2026-02-16": "Washington's Birthday",
+    "2026-04-03": "Good Friday",
+    "2026-05-25": "Memorial Day",
+    "2026-06-19": "Juneteenth National Independence Day",
+    "2026-07-03": "Independence Day observed",
+    "2026-09-07": "Labor Day",
+    "2026-11-26": "Thanksgiving Day",
+    "2026-12-25": "Christmas Day",
+}
+
+
+def market_closed_reason(now: datetime | None = None) -> str | None:
+    now = now or datetime.now(market_tz())
+
+    if now.weekday() >= 5:
+        return "weekend"
+
+    holiday = MARKET_FULL_DAY_HOLIDAYS_2026.get(now.date().isoformat())
+    if holiday:
+        return f"market_holiday: {holiday}"
+
+    return None
+
+
+def write_market_closed_artifact(reason: str) -> tuple[pd.DataFrame, Path]:
+    initialize_paper_journal(journal_path(), overwrite=False)
+    status = paper_trading_status_report(journal_path())
+
+    timestamp_tag = pd.Timestamp.now(tz=CONFIG.timezone).strftime("%Y%m%d_%H%M%S")
+    status_path = scans_dir() / f"paper_journal_status_{timestamp_tag}.csv"
+    status.to_csv(status_path, index=False)
+
+    closed_path = scans_dir() / f"paper_market_closed_{timestamp_tag}.csv"
+    pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp.now(tz=CONFIG.timezone),
+                "reason": reason,
+                "action": "skipped_entry_and_exit_data_fetch",
+            }
+        ]
+    ).to_csv(closed_path, index=False)
+
+    print(f"Market closed or non-trading day detected: {reason}")
+    print(f"Wrote status output: {status_path}")
+    print(f"Wrote market-closed output: {closed_path}")
+    print("\nPaper journal status:")
+    print(status.to_string(index=False))
+
+    write_github_step_summary(None, status, None, exit_updates=pd.DataFrame())
+    return status, closed_path
+
 
 def seconds_until(target: datetime) -> float:
     return max(0.0, (target - datetime.now(target.tzinfo)).total_seconds())
@@ -362,6 +420,11 @@ def run_auto_mode(period: str, notes: str, scan_every_seconds: int) -> tuple[int
     print(f"Auto mode current time: {now:%Y-%m-%d %H:%M:%S %Z}")
     print(f"Entry window: {start:%Y-%m-%d %H:%M:%S %Z} to {end:%Y-%m-%d %H:%M:%S %Z}")
     print(f"Market close reference: {close:%Y-%m-%d %H:%M:%S %Z}")
+
+    closed_reason = market_closed_reason(now)
+    if closed_reason:
+        write_market_closed_artifact(closed_reason)
+        return 0, 0
 
     if now <= end:
         scans_completed, rows_added, _ = run_waiting_entry_loop(

@@ -1,0 +1,62 @@
+name: Alpaca Paper Strategy Entry
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SUBMIT_ALPACA_PAPER_STRATEGY_ORDER to submit a paper bracket order"
+        required: true
+        default: ""
+      allow_outside_entry_window:
+        description: "Testing only. true lets the job scan/submit outside the strategy entry window."
+        required: true
+        default: "false"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_PAPER: "true"
+
+jobs:
+  alpaca-paper-strategy-entry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Submit paper strategy order if a signal exists
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.allow_outside_entry_window }}" = "true" ]; then
+            EXTRA_ARGS="--allow-outside-entry-window"
+          fi
+
+          python alpaca_paper_strategy_entry_job.py \
+            --confirm "${{ inputs.confirm }}" \
+            $EXTRA_ARGS
+
+      - name: Upload broker strategy artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpaca-paper-strategy-entry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            data/logs/broker/
+            data/logs/scans/
+          retention-days: 14

@@ -1,0 +1,65 @@
+name: Alpaca Paper Order Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol for a low buy-limit submit/cancel test"
+        required: true
+        default: "SPY"
+      qty:
+        description: "Quantity for the test order"
+        required: true
+        default: "1"
+      limit_price:
+        description: "Very low limit price intended not to fill"
+        required: true
+        default: "1.00"
+      confirm:
+        description: "Type SUBMIT_ALPACA_PAPER_TEST to submit/cancel a paper test order"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_PAPER: "true"
+
+jobs:
+  alpaca-paper-order-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Submit and cancel paper test order
+        run: |
+          python alpaca_paper_order_test.py \
+            --symbol "${{ inputs.symbol }}" \
+            --qty "${{ inputs.qty }}" \
+            --limit-price "${{ inputs.limit_price }}" \
+            --confirm "${{ inputs.confirm }}"
+
+      - name: Upload broker order artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpaca-paper-order-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/logs/broker/
+          retention-days: 14

@@ -46,6 +46,40 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _value_text(value: Any) -> str:
+    """
+    Normalize Alpaca SDK enum values and plain strings.
+
+    alpaca-py may return account.status as AccountStatus.ACTIVE rather than
+    the plain string "ACTIVE". Local safety checks should treat both as ACTIVE.
+    """
+    if value is None:
+        return ""
+
+    if hasattr(value, "value"):
+        return str(value.value).strip()
+
+    text = str(value).strip()
+
+    # Handles strings like "AccountStatus.ACTIVE".
+    if "." in text:
+        maybe_enum_name = text.rsplit(".", 1)[-1]
+        if maybe_enum_name:
+            return maybe_enum_name.strip()
+
+    return text
+
+
+def _is_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+
+    if hasattr(value, "value"):
+        value = value.value
+
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
 def _format_qty(value: float) -> str:
     return f"{float(value):.6f}".rstrip("0").rstrip(".")
 
@@ -177,8 +211,11 @@ class AlpacaPaperBroker:
     def assert_account_can_trade(self) -> None:
         account = self.account_snapshot()
 
-        if str(account.get("status", "")).upper() != "ACTIVE":
-            raise AlpacaSafetyError(f"Alpaca paper account status is not ACTIVE: {account.get('status')}")
+        status_text = _value_text(account.get("status", "")).upper()
+        if status_text != "ACTIVE":
+            raise AlpacaSafetyError(
+                f"Alpaca paper account status is not ACTIVE: {account.get('status')}"
+            )
 
         blocked_values = {
             "trading_blocked": account.get("trading_blocked"),
@@ -186,7 +223,7 @@ class AlpacaPaperBroker:
             "transfers_blocked": account.get("transfers_blocked"),
         }
 
-        blocked = any(str(value).lower() == "true" for value in blocked_values.values())
+        blocked = any(_is_true(value) for value in blocked_values.values())
         if blocked:
             raise AlpacaSafetyError(f"Alpaca paper account has a block flag: {blocked_values}")
 

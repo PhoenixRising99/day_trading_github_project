@@ -1,0 +1,44 @@
+name: Alpaca Paper Connection Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_PAPER: "true"
+
+jobs:
+  alpaca-paper-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test Alpaca paper connection
+        run: |
+          python alpaca_connection_check.py
+
+      - name: Upload broker status artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpaca-paper-connection-check-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data/logs/broker/
+          retention-days: 14

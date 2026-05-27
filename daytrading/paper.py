@@ -89,6 +89,58 @@ def _signal_date(value, timezone: str = CONFIG.timezone) -> str:
         return ""
     return str(_market_timestamp(value, timezone).date())
 
+def _safe_market_date(value, timezone: str = CONFIG.timezone):
+    if pd.isna(value) or str(value).strip() == "":
+        return None
+    return _market_timestamp(value, timezone).date()
+
+
+def _no_current_session_preview(
+    symbols: Iterable[str],
+    config: TradingConfig,
+    strategy_params: StrategyParams,
+    reason: str,
+) -> pd.DataFrame:
+    """
+    Return a valid no-signal preview when the fetched data is stale.
+
+    This prevents a holiday or closed market from evaluating the prior trading
+    day's final candle as if it were a current intraday setup.
+    """
+    scan_timestamp = pd.Timestamp.now(tz=config.timezone)
+    today = scan_timestamp.date()
+    rows = []
+
+    for symbol in symbols:
+        rows.append(
+            {
+                "scan_timestamp": scan_timestamp,
+                "data_timestamp": pd.NaT,
+                "signal_date": str(today),
+                "symbol": symbol,
+                "last_price": np.nan,
+                "signal": False,
+                "raw_signal_before_time_filter": False,
+                "entry_window_open": False,
+                "setup_score": 0,
+                "setup_max_score": getattr(strategy_params, "max_score", 14),
+                "reason": reason,
+                "entry_preview": np.nan,
+                "shares_preview": 0,
+                "position_value_preview": 0,
+                "stop_loss_preview": np.nan,
+                "take_profit_preview": np.nan,
+                "risk_dollars_preview": 0,
+                "rsi_14": np.nan,
+                "volume_ratio": np.nan,
+                "vwap": np.nan,
+                "vwap_distance_atr": np.nan,
+                "market_filter_ok": False,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
 
 def _latest_completed_rows(
     data: pd.DataFrame,
@@ -248,8 +300,31 @@ def paper_scan(
 
     latest_rows = _latest_completed_rows(data, config).copy()
 
-    previews = []
     scan_timestamp = pd.Timestamp.now(tz=config.timezone)
+    today = scan_timestamp.date()
+
+    if latest_rows.empty or "timestamp" not in latest_rows.columns:
+        return _no_current_session_preview(
+            symbols,
+            config,
+            strategy_params,
+            "no_intraday_data_returned",
+        )
+
+    latest_rows["_market_date"] = latest_rows["timestamp"].map(
+        lambda value: _safe_market_date(value, config.timezone)
+    )
+    latest_rows = latest_rows[latest_rows["_market_date"] == today].copy()
+
+    if latest_rows.empty:
+        return _no_current_session_preview(
+            symbols,
+            config,
+            strategy_params,
+            "market_closed_or_no_current_session_data",
+        )
+
+    previews = []
 
     for _, row in latest_rows.iterrows():
         setup = evaluate_long_setup(row, strategy_params)

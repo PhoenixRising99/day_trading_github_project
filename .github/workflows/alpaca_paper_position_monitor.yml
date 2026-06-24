@@ -1,0 +1,97 @@
+name: Alpaca Paper Position Monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type SUBMIT_ALPACA_PAPER_EXIT_ORDER to allow a real (paper) exit order"
+        required: false
+        default: ""
+
+  # GitHub Actions cron is UTC. This range covers 9:30 AM-4:00 PM ET trading
+  # hours across BOTH standard time and daylight time, in 5-minute steps:
+  #   13:30-20:00 UTC = 9:30 AM-4:00 PM EDT (daylight time, e.g. summer)
+  #   14:30-21:00 UTC = 9:30 AM-4:00 PM EST (standard time, e.g. winter)
+  # Each run is a single, cheap check: if a position is currently tracked,
+  # see whether an exit condition (stop, target, VWAP/EMA failure, or
+  # end-of-day) has occurred, and close it if so. If nothing is tracked,
+  # the run is a no-op. No internal wait loop.
+  schedule:
+    - cron: "*/5 13-20 * * 1-5"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_PAPER: "true"
+  ALPACA_PAPER_ORDER_SUBMISSION_ENABLED: ${{ secrets.ALPACA_PAPER_ORDER_SUBMISSION_ENABLED }}
+
+concurrency:
+  group: alpaca-paper-position-monitor
+  cancel-in-progress: false
+
+jobs:
+  alpaca-paper-position-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check tracked position for an exit condition
+        env:
+          CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          CONFIRM_VALUE="$CONFIRM_INPUT"
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            CONFIRM_VALUE="SUBMIT_ALPACA_PAPER_EXIT_ORDER"
+          fi
+
+          python alpaca_paper_position_monitor.py --confirm "$CONFIRM_VALUE"
+
+      - name: Upload broker monitor artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpaca-paper-position-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            data/logs/broker/
+          retention-days: 14
+
+      - name: Commit updated position state and exit log if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash || true
+
+          if [ -f data/logs/broker/alpaca_open_position_state.json ]; then
+            git add data/logs/broker/alpaca_open_position_state.json
+          fi
+          if [ -f data/logs/broker/alpaca_paper_exit_log.csv ]; then
+            git add data/logs/broker/alpaca_paper_exit_log.csv
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No state/exit-log changes to commit."
+          else
+            git commit -m "Update Alpaca paper position monitor state [skip ci]"
+            git push
+          fi

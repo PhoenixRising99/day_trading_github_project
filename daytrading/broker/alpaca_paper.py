@@ -5,13 +5,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
-    StopLossRequest,
-    TakeProfitRequest,
 )
 
 
@@ -21,6 +19,18 @@ class AlpacaConfigError(RuntimeError):
 
 class AlpacaSafetyError(RuntimeError):
     """Raised when an order is blocked by a local safety rule."""
+
+
+# Global kill switch, independent of ALPACA_PAPER. Set this GitHub
+# Secret/Variable to "false" to immediately stop all order submission
+# (entries AND exits) without touching API keys or paper mode. Defaults to
+# enabled ("true") when unset so existing behavior is unaffected unless this
+# is explicitly configured.
+ORDER_SUBMISSION_ENABLED_ENV = "ALPACA_PAPER_ORDER_SUBMISSION_ENABLED"
+
+ENTRY_CONFIRM_VALUE = "SUBMIT_ALPACA_PAPER_STRATEGY_ORDER"
+EXIT_CONFIRM_VALUE = "SUBMIT_ALPACA_PAPER_EXIT_ORDER"
+TEST_CONFIRM_VALUE = "SUBMIT_ALPACA_PAPER_TEST"
 
 
 def _model_to_dict(obj: Any) -> dict:
@@ -98,6 +108,19 @@ class AlpacaPaperBroker:
     - Paper trading only.
     - No live endpoint support.
     - Order methods require explicit confirm strings from the caller.
+    - Order submission can be globally disabled via ORDER_SUBMISSION_ENABLED_ENV
+      without touching API keys or paper mode.
+
+    Order design note (important):
+    Alpaca does not support fractional share quantities on bracket/OCO
+    orders -- fractional qty is only supported on simple market/limit/stop
+    orders with time_in_force=Day. Because this research account's position
+    sizing is intentionally fractional (see daytrading/strategy.py
+    calculate_position_size, driven by a $24 max position value against
+    multi-hundred-dollar stocks), entries here use a SIMPLE market order,
+    never a bracket order. Stop-loss / take-profit / EMA-VWAP / end-of-day
+    exits are handled separately by alpaca_paper_position_monitor.py, which
+    also submits simple orders to close the position.
     """
 
     api_key: str
@@ -195,6 +218,7 @@ class AlpacaPaperBroker:
         return {
             "paper_only": True,
             "live_trading_enabled": False,
+            "order_submission_enabled": self.order_submission_enabled(),
             "research_account_size": research_account_size,
             "max_position_value_research": round(research_account_size * 0.20, 2),
             "account_status": account.get("status", ""),
@@ -207,6 +231,17 @@ class AlpacaPaperBroker:
             "alpaca_cash_visible": _safe_float(account.get("cash")),
             "alpaca_portfolio_value_visible": _safe_float(account.get("portfolio_value")),
         }
+
+    def order_submission_enabled(self) -> bool:
+        raw = os.environ.get(ORDER_SUBMISSION_ENABLED_ENV, "true").strip().lower()
+        return raw not in {"false", "0", "no"}
+
+    def assert_order_submission_enabled(self) -> None:
+        if not self.order_submission_enabled():
+            raise AlpacaSafetyError(
+                f"{ORDER_SUBMISSION_ENABLED_ENV} is set to disable order submission. "
+                "No entry or exit orders will be sent until it is re-enabled."
+            )
 
     def assert_account_can_trade(self) -> None:
         account = self.account_snapshot()
@@ -241,9 +276,10 @@ class AlpacaPaperBroker:
         This tests order submission/cancellation without intentionally creating
         a fill. The confirmation string must be exactly SUBMIT_ALPACA_PAPER_TEST.
         """
-        if confirm != "SUBMIT_ALPACA_PAPER_TEST":
-            raise AlpacaSafetyError("Confirmation string did not match SUBMIT_ALPACA_PAPER_TEST.")
+        if confirm != TEST_CONFIRM_VALUE:
+            raise AlpacaSafetyError(f"Confirmation string did not match {TEST_CONFIRM_VALUE}.")
 
+        self.assert_order_submission_enabled()
         self.assert_account_can_trade()
 
         order_request = LimitOrderRequest(
@@ -277,44 +313,37 @@ class AlpacaPaperBroker:
             "cancel_result": _model_to_dict(cancelled),
         }
 
-    def submit_market_bracket_buy(
+    def submit_market_buy(
         self,
         *,
         symbol: str,
         qty: float,
-        take_profit_price: float,
-        stop_loss_price: float,
         confirm: str,
         client_order_id: str | None = None,
     ) -> dict:
         """
-        Submit a paper-only market bracket buy.
+        Submit a paper-only SIMPLE market buy (no bracket/OCO legs).
 
+        Fractional qty is supported here because this is a simple order.
         Requires confirmation string SUBMIT_ALPACA_PAPER_STRATEGY_ORDER.
-
-        This intentionally uses qty, not Alpaca buying power. The qty should be
-        produced by the strategy/risk model using the research account size.
+        Stop-loss/take-profit/strategy exits are handled by a separate
+        position-monitor job, not by this order.
         """
-        if confirm != "SUBMIT_ALPACA_PAPER_STRATEGY_ORDER":
-            raise AlpacaSafetyError(
-                "Confirmation string did not match SUBMIT_ALPACA_PAPER_STRATEGY_ORDER."
-            )
+        if confirm != ENTRY_CONFIRM_VALUE:
+            raise AlpacaSafetyError(f"Confirmation string did not match {ENTRY_CONFIRM_VALUE}.")
 
         if qty <= 0:
             raise AlpacaSafetyError(f"Quantity must be positive. Received: {qty}")
 
+        self.assert_order_submission_enabled()
         self.assert_account_can_trade()
 
-        request_kwargs = {
+        request_kwargs: dict[str, Any] = {
             "symbol": symbol.upper().strip(),
             "qty": _format_qty(qty),
             "side": OrderSide.BUY,
             "time_in_force": TimeInForce.DAY,
-            "order_class": OrderClass.BRACKET,
-            "take_profit": TakeProfitRequest(limit_price=_format_price(take_profit_price)),
-            "stop_loss": StopLossRequest(stop_price=_format_price(stop_loss_price)),
         }
-
         if client_order_id:
             request_kwargs["client_order_id"] = client_order_id
 
@@ -323,10 +352,51 @@ class AlpacaPaperBroker:
 
         return {
             "paper_only": True,
-            "order_kind": "market_bracket_buy",
+            "order_kind": "simple_market_buy",
             "symbol": symbol.upper().strip(),
             "qty": _format_qty(qty),
-            "take_profit_price": _format_price(take_profit_price),
-            "stop_loss_price": _format_price(stop_loss_price),
+            "submitted_order": _model_to_dict(submitted),
+        }
+
+    def submit_market_sell(
+        self,
+        *,
+        symbol: str,
+        qty: float,
+        confirm: str,
+        client_order_id: str | None = None,
+    ) -> dict:
+        """
+        Submit a paper-only SIMPLE market sell to close (all or part of) a
+        long position. Used by the position monitor for stop/target/EMA-VWAP/
+        end-of-day exits. Requires confirmation string
+        SUBMIT_ALPACA_PAPER_EXIT_ORDER.
+        """
+        if confirm != EXIT_CONFIRM_VALUE:
+            raise AlpacaSafetyError(f"Confirmation string did not match {EXIT_CONFIRM_VALUE}.")
+
+        if qty <= 0:
+            raise AlpacaSafetyError(f"Quantity must be positive. Received: {qty}")
+
+        self.assert_order_submission_enabled()
+        self.assert_account_can_trade()
+
+        request_kwargs: dict[str, Any] = {
+            "symbol": symbol.upper().strip(),
+            "qty": _format_qty(qty),
+            "side": OrderSide.SELL,
+            "time_in_force": TimeInForce.DAY,
+        }
+        if client_order_id:
+            request_kwargs["client_order_id"] = client_order_id
+
+        order_request = MarketOrderRequest(**request_kwargs)
+        submitted = self.client().submit_order(order_data=order_request)
+
+        return {
+            "paper_only": True,
+            "order_kind": "simple_market_sell",
+            "symbol": symbol.upper().strip(),
+            "qty": _format_qty(qty),
             "submitted_order": _model_to_dict(submitted),
         }

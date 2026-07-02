@@ -12,19 +12,28 @@ on:
         required: true
         default: "false"
 
-  # GitHub Actions cron is UTC. This range covers the 10:15-10:59 AM ET
-  # strategy entry window across BOTH standard time and daylight time, so
-  # the schedule does not need to change with DST:
-  #   14:15-14:59 UTC = 10:15-10:59 AM EDT (daylight time, e.g. summer)
-  #   15:15-15:59 UTC = 10:15-10:59 AM EST (standard time, e.g. winter)
-  # Each run is a single quick check, NOT a multi-hour wait. The Python
-  # script itself checks the real US/Eastern wall-clock time and exits
-  # cleanly with reason "outside_entry_window" on any run that lands outside
-  # the actual window, so this is safe even though the UTC range above is
-  # wider than the real ET window and even if GitHub fires a run a few
-  # minutes late.
+  # WHY THIS SCHEDULE LOOKS THE WAY IT DOES:
+  # GitHub Actions cron firings are best-effort. During high-load periods
+  # (worst at the start of each hour and during US mornings, i.e. exactly
+  # our entry window), scheduled runs are delayed -- often by 10-30+
+  # minutes -- and frequently dropped outright. A */5 schedule that needs
+  # ~10 independent firings inside a 44-minute window is therefore
+  # unreliable: on 2026-07-01 GitHub delivered exactly one of them, at
+  # 12:19 PM ET, after the window had closed.
+  #
+  # So instead: fire a FEW redundant times near window-open, and let the
+  # job itself loop every 5 minutes (like the long-proven paper_scan.yml
+  # pattern) until the window is over. Only one firing needs to arrive.
+  #
+  # GitHub cron is UTC. The entry window is 10:15-10:59 AM ET.
+  #   14:00/14:10 UTC = 10:00/10:10 AM EDT (daylight time)  -> loops ~1h
+  #   15:00/15:10 UTC = 10:00/10:10 AM EST (standard time)  -> loops ~1h
+  # The wrong-season pair still runs but each 5-minute check exits in
+  # ~2 seconds as "outside_entry_window" (the script checks the ET clock
+  # before doing any work), so it is cheap and harmless. The concurrency
+  # group prevents overlapping copies.
   schedule:
-    - cron: "*/5 14-15 * * 1-5"
+    - cron: "0,10 14-15 * * 1-5"
 
 permissions:
   contents: write
@@ -43,8 +52,9 @@ concurrency:
 jobs:
   alpaca-paper-strategy-entry:
     runs-on: ubuntu-latest
-    # No internal wait loop anymore, so this no longer needs hours of budget.
-    timeout-minutes: 15
+    # Worst case: standard-time firing at 9:00 AM ET loops cheap
+    # out-of-window checks for ~2h05m until 11:05 ET. Keep headroom.
+    timeout-minutes: 150
 
     steps:
       - name: Check out repository
@@ -63,7 +73,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check for a strategy entry signal and submit if qualified
+      - name: Scan for an entry signal every 5 minutes until the window closes
         env:
           CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
           ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT: ${{ github.event.inputs.allow_outside_entry_window }}
@@ -80,11 +90,43 @@ jobs:
             EXTRA_ARGS="--allow-outside-entry-window"
           fi
 
-          python alpaca_paper_strategy_entry_job.py \
-            --confirm "$CONFIRM_VALUE" \
-            $EXTRA_ARGS
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Manual test runs outside the window do a single check and exit,
+          # instead of looping until 11:05 ET.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT" = "true" ]; then
+            python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_VALUE" $EXTRA_ARGS
+            exit 0
+          fi
+
+          while :; do
+            NOW_ET="$(TZ=America/New_York date +%H:%M)"
+            if [ "$NOW_ET" \> "11:04" ]; then
+              echo "ET time $NOW_ET is past the entry window. Done for today."
+              break
+            fi
+
+            # Pick up any state committed by the position monitor since the
+            # last iteration (e.g. a reconciliation), so the
+            # one-trade-per-day guard always sees the latest state.
+            git pull --rebase --autostash || true
+
+            python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_VALUE" $EXTRA_ARGS
+
+            if [ -f data/logs/broker/alpaca_open_position_state.json ]; then
+              git add data/logs/broker/alpaca_open_position_state.json
+              if ! git diff --cached --quiet; then
+                git commit -m "Update Alpaca paper position state [skip ci]"
+                git push || { git pull --rebase --autostash && git push; } || true
+              fi
+            fi
+
+            sleep 300
+          done
 
       - name: Upload broker strategy artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alpaca-paper-strategy-entry-${{ github.run_id }}-${{ github.run_attempt }}
@@ -92,20 +134,3 @@ jobs:
             data/logs/broker/
             data/logs/scans/
           retention-days: 14
-
-      - name: Commit updated position state if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash || true
-
-          if [ -f data/logs/broker/alpaca_open_position_state.json ]; then
-            git add data/logs/broker/alpaca_open_position_state.json
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No position-state changes to commit."
-          else
-            git commit -m "Update Alpaca paper position state [skip ci]"
-            git push
-          fi

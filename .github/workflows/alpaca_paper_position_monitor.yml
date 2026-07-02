@@ -8,16 +8,28 @@ on:
         required: false
         default: ""
 
-  # GitHub Actions cron is UTC. This range covers 9:30 AM-4:00 PM ET trading
-  # hours across BOTH standard time and daylight time, in 5-minute steps:
-  #   13:30-20:00 UTC = 9:30 AM-4:00 PM EDT (daylight time, e.g. summer)
-  #   14:30-21:00 UTC = 9:30 AM-4:00 PM EST (standard time, e.g. winter)
-  # Each run is a single, cheap check: if a position is currently tracked,
-  # see whether an exit condition (stop, target, VWAP/EMA failure, or
-  # end-of-day) has occurred, and close it if so. If nothing is tracked,
-  # the run is a no-op. No internal wait loop.
+  # WHY THIS SCHEDULE LOOKS THE WAY IT DOES:
+  # GitHub Actions cron firings are best-effort and high-frequency (*/5)
+  # schedules get delayed or dropped heavily under load: on 2026-07-01 this
+  # workflow was asked to run ~84 times and GitHub delivered 4 runs, about
+  # two hours apart. A position monitor cannot tolerate multi-hour gaps.
+  #
+  # So instead: fire at :00 and :30 each hour (far more likely to be
+  # delivered than */5), and have each delivered run loop internally every
+  # 5 minutes for up to ~55 minutes before handing off. The concurrency
+  # group queues the next firing until the current run finishes, chaining
+  # runs into continuous coverage. If GitHub drops a firing entirely, the
+  # worst-case monitoring gap is bounded at roughly the next successful
+  # firing (~30-60 min) instead of hours.
+  #
+  # GitHub cron is UTC. Market hours are 9:30 AM - 4:00 PM ET.
+  #   13:00-20:30 UTC firings = 9:00 AM - 4:30 PM EDT (daylight time)
+  #   13:00-20:30 UTC firings = 8:00 AM - 3:30 PM EST (standard time)
+  # Each run checks the real ET clock itself: before 9:25 AM ET it exits
+  # immediately (a later firing will cover the open), and after 16:04 ET it
+  # stops. So the schedule needs no seasonal editing.
   schedule:
-    - cron: "*/5 13-20 * * 1-5"
+    - cron: "0,30 13-20 * * 1-5"
 
 permissions:
   contents: write
@@ -36,7 +48,7 @@ concurrency:
 jobs:
   alpaca-paper-position-monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 80
 
     steps:
       - name: Check out repository
@@ -55,7 +67,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Check tracked position for an exit condition
+      - name: Check tracked position every 5 minutes, then hand off
         env:
           CONFIRM_INPUT: ${{ github.event.inputs.confirm }}
           EVENT_NAME: ${{ github.event_name }}
@@ -66,32 +78,67 @@ jobs:
             CONFIRM_VALUE="SUBMIT_ALPACA_PAPER_EXIT_ORDER"
           fi
 
-          python alpaca_paper_position_monitor.py --confirm "$CONFIRM_VALUE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Manual runs do a single check and exit.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            python alpaca_paper_position_monitor.py --confirm "$CONFIRM_VALUE"
+            exit 0
+          fi
+
+          LOOP_START="$(date +%s)"
+          MAX_LOOP_SECONDS=3300  # ~55 min, then the next queued firing takes over
+
+          while :; do
+            NOW_ET="$(TZ=America/New_York date +%H:%M)"
+
+            if [ "$NOW_ET" \< "09:25" ]; then
+              echo "ET time $NOW_ET is before market hours. Exiting; a later firing covers the open."
+              break
+            fi
+            if [ "$NOW_ET" \> "16:04" ]; then
+              echo "ET time $NOW_ET is past market close. Done for today."
+              break
+            fi
+
+            ELAPSED=$(( $(date +%s) - LOOP_START ))
+            if [ "$ELAPSED" -gt "$MAX_LOOP_SECONDS" ]; then
+              echo "Handing off to the next scheduled run after ${ELAPSED}s."
+              break
+            fi
+
+            # Pick up any state committed by the entry job (a new position)
+            # or a previous monitor run since the last iteration.
+            git pull --rebase --autostash || true
+
+            python alpaca_paper_position_monitor.py --confirm "$CONFIRM_VALUE"
+
+            CHANGED=0
+            if [ -f data/logs/broker/alpaca_open_position_state.json ]; then
+              git add data/logs/broker/alpaca_open_position_state.json
+            fi
+            if [ -f data/logs/broker/alpaca_paper_exit_log.csv ]; then
+              git add data/logs/broker/alpaca_paper_exit_log.csv
+            fi
+            if ! git diff --cached --quiet; then
+              CHANGED=1
+              git commit -m "Update Alpaca paper position monitor state [skip ci]"
+              git push || { git pull --rebase --autostash && git push; } || true
+            fi
+
+            # If this iteration just closed the position, keep looping is
+            # unnecessary today (max 1 trade/day) -- but a cheap no-op loop
+            # is also harmless and guards against a same-day reconciliation
+            # edge, so we simply continue until close/handoff.
+            sleep 300
+          done
 
       - name: Upload broker monitor artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alpaca-paper-position-monitor-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             data/logs/broker/
           retention-days: 14
-
-      - name: Commit updated position state and exit log if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash || true
-
-          if [ -f data/logs/broker/alpaca_open_position_state.json ]; then
-            git add data/logs/broker/alpaca_open_position_state.json
-          fi
-          if [ -f data/logs/broker/alpaca_paper_exit_log.csv ]; then
-            git add data/logs/broker/alpaca_paper_exit_log.csv
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No state/exit-log changes to commit."
-          else
-            git commit -m "Update Alpaca paper position monitor state [skip ci]"
-            git push
-          fi

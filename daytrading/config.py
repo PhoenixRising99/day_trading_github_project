@@ -41,7 +41,10 @@ class StrategyParams:
 
 CONFIG = TradingConfig()
 STRATEGY_PARAMS = StrategyParams()
-WATCHLIST = ["SPY", "AAPL", "MSFT"]
+# Watchlist widened 2026-07-08 from ["SPY", "AAPL", "MSFT"] to speed up
+# sample accumulation and test signal generalization across comparable
+# ultra-liquid names. Strategy rules (StrategyParams) remain frozen V9.
+WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META"]
 
 # Frozen strategy entry window: 10:15 AM to 10:59 AM ET.
 ENTRY_START_HOUR = 10

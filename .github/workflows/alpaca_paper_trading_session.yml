@@ -4,54 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       confirm_entry:
-        description: "Type SUBMIT_ALPACA_PAPER_STRATEGY_ORDER to allow a paper entry order"
+        description: "Type SUBMIT_ALPACA_PAPER_STRATEGY_ORDER for a manual paper entry test"
         required: false
         default: ""
       confirm_exit:
-        description: "Type SUBMIT_ALPACA_PAPER_EXIT_ORDER to allow a paper exit order"
+        description: "Type SUBMIT_ALPACA_PAPER_EXIT_ORDER for a manual paper exit test"
         required: false
         default: ""
       allow_outside_entry_window:
-        description: "Testing only. true runs one entry check outside the window, then exits."
+        description: "Testing only. true runs one entry check outside the window."
         required: true
         default: "false"
       session_mode:
-        description: "true runs the full trading session loop (used by the external scheduler). false does a single test check."
+        description: "true runs a bounded session loop for cron-job.org; false performs one cycle."
         required: true
         default: "false"
 
-  # WHY THIS SCHEDULE LOOKS THE WAY IT DOES:
-  # Observed reality in this repo (2026-07-01 through 2026-07-07): GitHub
-  # delivers only a fraction of requested cron firings, delayed by roughly
-  # 30 minutes to 3 HOURS. Morning US hours (14:00-16:00 UTC) are worst.
-  # Any design that needs a firing to arrive close to its requested time
-  # will keep missing the 10:15-10:59 AM ET entry window.
-  #
-  # So: request firings hours BEFORE the window. A delay then just moves
-  # the start closer to the window instead of past it. Each delivered run
-  # waits cheaply until 10:05 ET, scans for an entry every 5 minutes during
-  # the window, and then stays on as the position monitor. Later firings
-  # queue up behind the running one (concurrency group) and take over when
-  # it hands off, chaining coverage until the 16:00 ET close.
-  #
-  # Nominal ET start times (UTC cron, shown for daylight / standard time):
-  #   10:00 UTC =  6:00 /  5:00 AM ET   (extra-early safety margin)
-  #   11:00 UTC =  7:00 /  6:00 AM ET
-  #   12:00 UTC =  8:00 /  7:00 AM ET
-  #   13:00 UTC =  9:00 /  8:00 AM ET
-  #   14:30 UTC = 10:30 /  9:30 AM ET
-  #   16:00 UTC = 12:00 / 11:00 AM ET
-  #   17:30 UTC =  1:30 / 12:30 PM ET
-  #   19:00 UTC =  3:00 /  2:00 PM ET
-  # Even the worst observed delay (~3h) on the 11:00-13:00 UTC firings
-  # still lands before or inside the entry window. All time gating below
-  # uses the real ET wall clock, so no seasonal editing is needed.
-  schedule:
-    - cron: "0 10-13 * * 1-5"
-    - cron: "30 14 * * 1-5"
-    - cron: "0 16 * * 1-5"
-    - cron: "30 17 * * 1-5"
-    - cron: "0 19 * * 1-5"
+# Scheduling is intentionally delegated to cron-job.org. GitHub's native cron
+# was repeatedly delayed by 30 minutes to several hours and also created queued,
+# overlapping session runs. cron-job.org should dispatch this workflow with
+# session_mode=true. A second dispatch later in the day can hand off monitoring
+# because each session is capped below the user's observed four-hour limit.
 
 permissions:
   contents: write
@@ -61,7 +34,13 @@ env:
   ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
   ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
   ALPACA_PAPER: "true"
+
+  # Backward-compatible global switch.
   ALPACA_PAPER_ORDER_SUBMISSION_ENABLED: ${{ secrets.ALPACA_PAPER_ORDER_SUBMISSION_ENABLED }}
+
+  # Optional separate switches. If unset, code falls back to the global switch.
+  ALPACA_PAPER_ENTRY_SUBMISSION_ENABLED: ${{ secrets.ALPACA_PAPER_ENTRY_SUBMISSION_ENABLED }}
+  ALPACA_PAPER_EXIT_SUBMISSION_ENABLED: ${{ secrets.ALPACA_PAPER_EXIT_SUBMISSION_ENABLED }}
 
 concurrency:
   group: alpaca-paper-trading-session
@@ -70,9 +49,7 @@ concurrency:
 jobs:
   alpaca-paper-trading-session:
     runs-on: ubuntu-latest
-    # The internal loop hands off after at most 330 minutes; 350 leaves
-    # room for setup, and stays under GitHub's 360-minute job ceiling.
-    timeout-minutes: 350
+    timeout-minutes: 235
 
     steps:
       - name: Check out repository
@@ -91,20 +68,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run trading session (entry scan, then position monitoring)
+      - name: Run trading cycle or bounded session
         env:
           CONFIRM_ENTRY_INPUT: ${{ github.event.inputs.confirm_entry }}
           CONFIRM_EXIT_INPUT: ${{ github.event.inputs.confirm_exit }}
           ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT: ${{ github.event.inputs.allow_outside_entry_window }}
           SESSION_MODE_INPUT: ${{ github.event.inputs.session_mode }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           CONFIRM_ENTRY="$CONFIRM_ENTRY_INPUT"
           CONFIRM_EXIT="$CONFIRM_EXIT_INPUT"
 
-          # Auto-confirm for GitHub-cron runs AND for full-session runs
-          # dispatched by the external scheduler (session_mode=true).
-          if [ "$EVENT_NAME" = "schedule" ] || [ "$SESSION_MODE_INPUT" = "true" ]; then
+          # cron-job.org dispatches session_mode=true. That is an explicit
+          # paper-only automation request, so confirmation strings are supplied
+          # internally. API mode remains forced to paper.
+          if [ "$SESSION_MODE_INPUT" = "true" ]; then
             CONFIRM_ENTRY="SUBMIT_ALPACA_PAPER_STRATEGY_ORDER"
             CONFIRM_EXIT="SUBMIT_ALPACA_PAPER_EXIT_ORDER"
           fi
@@ -116,67 +93,64 @@ jobs:
 
           commit_state_if_changed() {
             [ -f "$STATE_FILE" ] && git add "$STATE_FILE"
-            [ -f data/logs/broker/alpaca_paper_exit_log.csv ] && git add data/logs/broker/alpaca_paper_exit_log.csv
+            [ -f data/logs/broker/alpaca_paper_exit_log.csv ] && \
+              git add data/logs/broker/alpaca_paper_exit_log.csv
+
             if ! git diff --cached --quiet; then
               git commit -m "Update Alpaca paper position state [skip ci]"
               git push || { git pull --rebase --autostash && git push; } || true
             fi
           }
 
-          # Manual test runs: one entry check (+ one monitor check), then exit.
-          # External-scheduler dispatches set session_mode=true and fall
-          # through to the full session loop below instead.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$SESSION_MODE_INPUT" != "true" ]; then
-            EXTRA_ARGS=""
-            if [ "$ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT" = "true" ]; then
-              EXTRA_ARGS="--allow-outside-entry-window"
+          run_one_cycle() {
+            NOW_ET="$(TZ=America/New_York date +%H:%M)"
+
+            if [ "$NOW_ET" \> "10:09" ] && [ "$NOW_ET" \< "11:05" ]; then
+              python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_ENTRY"
+            elif [ "$ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT" = "true" ]; then
+              python alpaca_paper_strategy_entry_job.py \
+                --confirm "$CONFIRM_ENTRY" \
+                --allow-outside-entry-window
             fi
-            python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_ENTRY" $EXTRA_ARGS
+
             python alpaca_paper_position_monitor.py --confirm "$CONFIRM_EXIT"
             commit_state_if_changed
+          }
+
+          # Manual/default dispatch: one quick cycle, then exit.
+          if [ "$SESSION_MODE_INPUT" != "true" ]; then
+            run_one_cycle
             exit 0
           fi
 
+          # Bounded cron-job.org session. 220 minutes stays below the user's
+          # observed four-hour limit. Use a later cron-job.org dispatch to hand
+          # off monitoring when a position remains open.
           LOOP_START="$(date +%s)"
-          MAX_SESSION_SECONDS=19800  # 330 min, then hand off to the next queued firing
+          MAX_SESSION_SECONDS=13200
 
           while :; do
             ELAPSED=$(( $(date +%s) - LOOP_START ))
             if [ "$ELAPSED" -gt "$MAX_SESSION_SECONDS" ]; then
-              echo "Handing off to the next scheduled run after ${ELAPSED}s."
+              echo "Bounded session handoff after ${ELAPSED}s."
               break
             fi
 
             NOW_ET="$(TZ=America/New_York date +%H:%M)"
-
             if [ "$NOW_ET" \> "16:04" ]; then
               echo "ET time $NOW_ET is past market close. Session done."
               break
             fi
 
-            # Nothing can happen before the entry window (positions never
-            # carry overnight), so idle cheaply until just before it.
+            # Before 10:05 ET there is no entry or overnight position to manage.
             if [ "$NOW_ET" \< "10:05" ]; then
               sleep 120
               continue
             fi
 
-            # Pick up state committed by any other run since last iteration.
             git pull --rebase --autostash || true
+            run_one_cycle
 
-            # Entry phase: only inside (a hair around) the 10:15-10:59 ET
-            # window. The Python script re-checks the exact window and the
-            # one-trade-per-day guard itself.
-            if [ "$NOW_ET" \> "10:09" ] && [ "$NOW_ET" \< "11:05" ]; then
-              python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_ENTRY"
-            fi
-
-            # Monitor phase: cheap no-op when no position is tracked.
-            python alpaca_paper_position_monitor.py --confirm "$CONFIRM_EXIT"
-
-            commit_state_if_changed
-
-            # Early finish: entry window closed and nothing open to watch.
             if [ "$NOW_ET" \> "11:04" ]; then
               STATUS="$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('status',''))" 2>/dev/null || echo "none")"
               if [ "$STATUS" != "open" ]; then

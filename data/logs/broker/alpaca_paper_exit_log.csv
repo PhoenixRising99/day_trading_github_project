@@ -1,0 +1,2 @@
+symbol,signal_date,opened_at_et,closed_at_et,qty,entry_preview,stop_loss_preview,take_profit_preview,exit_reason,exit_close_price
+SPY,2026-07-14,2026-07-14T10:42:09.477123-04:00,2026-07-14T11:57:40.149754-04:00,0.031902,752.306,744.7829,762.4621,lost_vwap_2bar,750.7899780273438

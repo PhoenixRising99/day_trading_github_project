@@ -24,14 +24,16 @@ def _flatten_yfinance_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
             # Fall back to dropping the outer level if only one ticker came back.
             df.columns = df.columns.get_level_values(-1)
 
-    df = df.rename(columns={
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
-        "Adj Close": "adj_close",
-        "Volume": "volume",
-    })
+    df = df.rename(
+        columns={
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Adj Close": "adj_close",
+            "Volume": "volume",
+        }
+    )
 
     required = ["open", "high", "low", "close", "volume"]
     missing = [c for c in required if c not in df.columns]
@@ -46,6 +48,27 @@ def _flatten_yfinance_frame(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
 
 
+def _ordered_symbols(symbols: Iterable[str]) -> list[str]:
+    """
+    Normalize/deduplicate symbols and fetch SPY last.
+
+    SPY supplies the market-regime context for every candidate. Fetching it last
+    makes the context snapshot at least as fresh as the candidate-symbol
+    downloads instead of several seconds older than them.
+    """
+    normalized: list[str] = []
+
+    for value in symbols:
+        symbol = str(value).upper().strip()
+        if symbol and symbol not in normalized:
+            normalized.append(symbol)
+
+    if "SPY" in normalized and len(normalized) > 1:
+        normalized = [symbol for symbol in normalized if symbol != "SPY"] + ["SPY"]
+
+    return normalized
+
+
 def fetch_intraday_data(
     symbols: Iterable[str],
     period: str = "5d",
@@ -55,12 +78,16 @@ def fetch_intraday_data(
     """
     Pull intraday OHLCV data using yfinance.
 
-    Free market data can be delayed, unavailable, or rate limited. This function
-    is suitable for research/paper observation only.
+    Free market data can be delayed, unavailable, internally inconsistent, or
+    rate limited. This function is suitable for research/paper observation only.
+
+    SPY is deliberately fetched last when it is part of a multi-symbol request,
+    because SPY is used as the market-context filter for all candidate rows.
     """
     frames: list[pd.DataFrame] = []
+    ordered_symbols = _ordered_symbols(symbols)
 
-    for symbol in symbols:
+    for symbol in ordered_symbols:
         try:
             raw = yf.download(
                 tickers=symbol,

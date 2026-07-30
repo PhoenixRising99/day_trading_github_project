@@ -1,2 +1,3 @@
-symbol,signal_date,opened_at_et,closed_at_et,qty,entry_preview,stop_loss_preview,take_profit_preview,exit_reason,exit_close_price
-SPY,2026-07-14,2026-07-14T10:42:09.477123-04:00,2026-07-14T11:57:40.149754-04:00,0.031902,752.306,744.7829,762.4621,lost_vwap_2bar,750.7899780273438
+symbol,signal_date,opened_at_et,closed_at_et,qty,entry_preview,stop_loss_preview,take_profit_preview,exit_reason,exit_close_price,client_order_id,entry_fill_price,exit_fill_price,realized_pnl,evaluated_bar,evaluated_close,order_status
+SPY,2026-07-14,2026-07-14T10:42:09.477123-04:00,2026-07-14T11:57:40.149754-04:00,0.031902,752.306,744.7829,762.4621,lost_vwap_2bar,750.7899780273438,,,,,,,
+NVDA,2026-07-30,2026-07-30T10:25:53.283332-04:00,2026-07-30T11:01:10.350508-04:00,0.12204,196.6563,194.6897,199.3111,stop_loss,,paper-exit-NVDA-2026-07-30,196.636,194.476,-0.263606,2026-07-30 10:55:00-04:00,194.87730407714844,filled

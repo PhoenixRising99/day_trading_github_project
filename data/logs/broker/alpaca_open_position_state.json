@@ -1,5 +1,5 @@
 {
-  "status": "open",
+  "status": "closed",
   "symbol": "MSFT",
   "qty": 0.048426,
   "qty_requested": 0.048426,
@@ -74,5 +74,58 @@
       "SPY"
     ],
     "missing_or_stale_symbols": []
+  },
+  "closed_reason": "lost_vwap_2bar",
+  "closed_at_et": "2026-08-26T12:02:37.833244-04:00",
+  "exit_fill_price": 494.088,
+  "exit_filled_qty": 0.048426,
+  "exit_filled_at": "2026-08-26 16:02:38.731245+00:00",
+  "exit_order_status": "filled",
+  "realized_pnl": -0.096949,
+  "exit_order": {
+    "paper_only": true,
+    "order_kind": "simple_market_sell",
+    "symbol": "MSFT",
+    "qty_requested": "0.048426",
+    "submitted_order": {
+      "id": "c6fc6c56-99b7-42ba-a231-e200d866459f",
+      "client_order_id": "paper-exit-MSFT-2026-08-26",
+      "symbol": "MSFT",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "pending_new",
+      "qty": "0.048426",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0",
+      "filled_avg_price": null,
+      "submitted_at": "2026-08-26 16:02:38.727888+00:00",
+      "filled_at": null,
+      "canceled_at": null,
+      "failed_at": null
+    },
+    "final_order": {
+      "id": "c6fc6c56-99b7-42ba-a231-e200d866459f",
+      "client_order_id": "paper-exit-MSFT-2026-08-26",
+      "symbol": "MSFT",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "filled",
+      "qty": "0.048426",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0.048426",
+      "filled_avg_price": "494.088",
+      "submitted_at": "2026-08-26 16:02:38.727888+00:00",
+      "filled_at": "2026-08-26 16:02:38.731245+00:00",
+      "canceled_at": null,
+      "failed_at": null
+    }
   }
 }

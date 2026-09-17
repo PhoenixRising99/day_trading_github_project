@@ -1,5 +1,5 @@
 {
-  "status": "open",
+  "status": "closed",
   "symbol": "AAPL",
   "qty": 0.072008,
   "qty_requested": 0.072008,
@@ -74,5 +74,58 @@
       "SPY"
     ],
     "missing_or_stale_symbols": []
+  },
+  "closed_reason": "lost_vwap_2bar",
+  "closed_at_et": "2026-09-17T10:57:04.853816-04:00",
+  "exit_fill_price": 332.786,
+  "exit_filled_qty": 0.072008,
+  "exit_filled_at": "2026-09-17 14:57:05.350009+00:00",
+  "exit_order_status": "filled",
+  "realized_pnl": 0.004464,
+  "exit_order": {
+    "paper_only": true,
+    "order_kind": "simple_market_sell",
+    "symbol": "AAPL",
+    "qty_requested": "0.072008",
+    "submitted_order": {
+      "id": "68929e0b-8b2f-4d5a-897a-64368a974951",
+      "client_order_id": "paper-exit-AAPL-2026-09-17",
+      "symbol": "AAPL",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "pending_new",
+      "qty": "0.072008",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0",
+      "filled_avg_price": null,
+      "submitted_at": "2026-09-17 14:57:05.288910+00:00",
+      "filled_at": null,
+      "canceled_at": null,
+      "failed_at": null
+    },
+    "final_order": {
+      "id": "68929e0b-8b2f-4d5a-897a-64368a974951",
+      "client_order_id": "paper-exit-AAPL-2026-09-17",
+      "symbol": "AAPL",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "filled",
+      "qty": "0.072008",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0.072008",
+      "filled_avg_price": "332.786",
+      "submitted_at": "2026-09-17 14:57:05.288910+00:00",
+      "filled_at": "2026-09-17 14:57:05.350009+00:00",
+      "canceled_at": null,
+      "failed_at": null
+    }
   }
 }

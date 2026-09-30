@@ -1,5 +1,5 @@
 {
-  "status": "open",
+  "status": "closed",
   "symbol": "QQQ",
   "qty": 0.032276,
   "qty_requested": 0.032276,
@@ -74,5 +74,58 @@
       "SPY"
     ],
     "missing_or_stale_symbols": []
+  },
+  "closed_reason": "ema_trend_failure",
+  "closed_at_et": "2026-09-30T13:22:41.871215-04:00",
+  "exit_fill_price": 742.506,
+  "exit_filled_qty": 0.032276,
+  "exit_filled_at": "2026-09-30 17:22:42.204527+00:00",
+  "exit_order_status": "filled",
+  "realized_pnl": -0.024401,
+  "exit_order": {
+    "paper_only": true,
+    "order_kind": "simple_market_sell",
+    "symbol": "QQQ",
+    "qty_requested": "0.032276",
+    "submitted_order": {
+      "id": "c679fa0b-5d3d-4b9b-9aa1-f0e00748d99c",
+      "client_order_id": "paper-exit-QQQ-2026-09-30",
+      "symbol": "QQQ",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "pending_new",
+      "qty": "0.032276",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0",
+      "filled_avg_price": null,
+      "submitted_at": "2026-09-30 17:22:42.198919+00:00",
+      "filled_at": null,
+      "canceled_at": null,
+      "failed_at": null
+    },
+    "final_order": {
+      "id": "c679fa0b-5d3d-4b9b-9aa1-f0e00748d99c",
+      "client_order_id": "paper-exit-QQQ-2026-09-30",
+      "symbol": "QQQ",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "filled",
+      "qty": "0.032276",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0.032276",
+      "filled_avg_price": "742.506",
+      "submitted_at": "2026-09-30 17:22:42.198919+00:00",
+      "filled_at": "2026-09-30 17:22:42.204527+00:00",
+      "canceled_at": null,
+      "failed_at": null
+    }
   }
 }

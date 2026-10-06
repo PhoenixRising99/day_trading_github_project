@@ -295,11 +295,26 @@ class AlpacaPaperBroker:
         if status not in TERMINAL_ORDER_STATUSES:
             order_id = str(existing.get("id", ""))
             final = self.wait_for_order_terminal(order_id) if order_id else existing
-            return client_order_id, final
+            final_status = str(final.get("status", "")).lower()
+            final_filled = _safe_float(final.get("filled_qty")) or 0.0
 
-        if status == "filled" or filled_qty > 0:
+            if final_status == "filled":
+                return client_order_id, final
+
+            if final_status not in TERMINAL_ORDER_STATUSES:
+                # Still live after the poll timeout: do not duplicate it.
+                return client_order_id, final
+
+            # Terminal-but-not-filled (including partial/cancelled): retry the
+            # remaining quantity with a new client ID.
+            retry_id = f"{client_order_id}-retry-{int(time.time())}"
+            return retry_id[:48], {}
+
+        if status == "filled":
             return client_order_id, existing
 
+        # Terminal-but-not-filled (including partial/cancelled) is safe to retry
+        # with a new deterministic-prefix client ID.
         retry_id = f"{client_order_id}-retry-{int(time.time())}"
         return retry_id[:48], {}
 

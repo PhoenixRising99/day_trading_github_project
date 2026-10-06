@@ -11,6 +11,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    StopOrderRequest,
 )
 
 
@@ -155,6 +156,16 @@ class AlpacaPaperBroker:
         ]
         return {key: data.get(key, "") for key in wanted_keys}
 
+    def clock_snapshot(self) -> dict:
+        """Return Alpaca's authoritative market clock, including early closes."""
+        data = _model_to_dict(self.client().get_clock())
+        return {
+            "timestamp": data.get("timestamp", ""),
+            "is_open": bool(data.get("is_open", False)),
+            "next_open": data.get("next_open", ""),
+            "next_close": data.get("next_close", ""),
+        }
+
     def open_positions(self) -> list[dict]:
         rows: list[dict] = []
         for pos in self.client().get_all_positions():
@@ -190,6 +201,29 @@ class AlpacaPaperBroker:
 
         return [self._order_snapshot(order) for order in orders]
 
+    def all_orders(self) -> list[dict]:
+        """Return recent orders of every status for reconciliation/idempotency."""
+        client = self.client()
+        try:
+            from alpaca.trading.enums import QueryOrderStatus
+
+            request = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)
+            orders = client.get_orders(filter=request)
+        except Exception:
+            try:
+                orders = client.get_orders()
+            except Exception:
+                orders = []
+        return [self._order_snapshot(order) for order in orders]
+
+    def strategy_entry_submitted_for_date(self, signal_date: str) -> bool:
+        suffix = f"-{signal_date}"
+        return any(
+            str(order.get("client_order_id", "")).startswith("paper-entry-")
+            and str(order.get("client_order_id", "")).endswith(suffix)
+            for order in self.all_orders()
+        )
+
     def _order_snapshot(self, order: Any) -> dict:
         data = _model_to_dict(order)
         return {
@@ -217,6 +251,57 @@ class AlpacaPaperBroker:
         if not order_id:
             return {}
         return self._order_snapshot(self.client().get_order_by_id(order_id))
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> dict:
+        if not client_order_id:
+            return {}
+        try:
+            order = self.client().get_order_by_client_id(client_order_id)
+        except Exception:
+            return {}
+        return self._order_snapshot(order)
+
+    def cancel_order(self, order_id: str, *, timeout_seconds: int = 20) -> dict:
+        if not order_id:
+            return {}
+        try:
+            self.client().cancel_order_by_id(order_id)
+        except Exception:
+            # A concurrently filled/cancelled order can make cancellation fail.
+            pass
+        try:
+            return self.wait_for_order_terminal(order_id, timeout_seconds=timeout_seconds)
+        except Exception as exc:
+            return {"id": order_id, "cancel_error": str(exc)}
+
+    def _existing_or_retry_client_id(
+        self,
+        client_order_id: str | None,
+    ) -> tuple[str | None, dict]:
+        """
+        Reuse an existing live/filled order. If a prior deterministic ID ended
+        terminal with zero fill, return a unique retry ID so recovery can proceed.
+        """
+        if not client_order_id:
+            return None, {}
+
+        existing = self.get_order_by_client_order_id(client_order_id)
+        if not existing:
+            return client_order_id, {}
+
+        status = str(existing.get("status", "")).lower()
+        filled_qty = _safe_float(existing.get("filled_qty")) or 0.0
+
+        if status not in TERMINAL_ORDER_STATUSES:
+            order_id = str(existing.get("id", ""))
+            final = self.wait_for_order_terminal(order_id) if order_id else existing
+            return client_order_id, final
+
+        if status == "filled" or filled_qty > 0:
+            return client_order_id, existing
+
+        retry_id = f"{client_order_id}-retry-{int(time.time())}"
+        return retry_id[:48], {}
 
     def wait_for_order_terminal(
         self,
@@ -374,14 +459,26 @@ class AlpacaPaperBroker:
         self.assert_submission_enabled("entry")
         self.assert_account_can_trade()
 
+        effective_client_id, existing = self._existing_or_retry_client_id(client_order_id)
+        if existing:
+            return {
+                "paper_only": True,
+                "order_kind": "simple_market_buy",
+                "symbol": symbol.upper().strip(),
+                "qty_requested": _format_qty(qty),
+                "reused_existing_order": True,
+                "submitted_order": existing,
+                "final_order": existing,
+            }
+
         kwargs: dict[str, Any] = {
             "symbol": symbol.upper().strip(),
             "qty": _format_qty(qty),
             "side": OrderSide.BUY,
             "time_in_force": TimeInForce.DAY,
         }
-        if client_order_id:
-            kwargs["client_order_id"] = client_order_id
+        if effective_client_id:
+            kwargs["client_order_id"] = effective_client_id
 
         submitted = self.client().submit_order(order_data=MarketOrderRequest(**kwargs))
         submitted_snapshot = self._order_snapshot(submitted)
@@ -394,6 +491,61 @@ class AlpacaPaperBroker:
             "qty_requested": _format_qty(qty),
             "submitted_order": submitted_snapshot,
             "final_order": final_snapshot,
+        }
+
+
+    def submit_protective_stop_sell(
+        self,
+        *,
+        symbol: str,
+        qty: float,
+        stop_price: float,
+        confirm: str,
+        client_order_id: str,
+    ) -> dict:
+        """Submit an idempotent paper-only fractional DAY stop order."""
+        if confirm != ENTRY_CONFIRM_VALUE:
+            raise AlpacaSafetyError(f"Confirmation string did not match {ENTRY_CONFIRM_VALUE}.")
+        if qty <= 0 or stop_price <= 0:
+            raise AlpacaSafetyError("Protective stop requires positive quantity and stop price.")
+
+        # Protective risk control is an exit capability.
+        self.assert_submission_enabled("exit")
+        self.assert_account_can_trade()
+
+        effective_client_id, existing = self._existing_or_retry_client_id(client_order_id)
+        if existing:
+            return {
+                "paper_only": True,
+                "order_kind": "protective_stop_sell",
+                "symbol": symbol.upper().strip(),
+                "qty_requested": _format_qty(qty),
+                "stop_price": _format_price(stop_price),
+                "reused_existing_order": True,
+                "submitted_order": existing,
+                "final_order": existing,
+            }
+
+        request = StopOrderRequest(
+            symbol=symbol.upper().strip(),
+            qty=_format_qty(qty),
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+            stop_price=_format_price(stop_price),
+            client_order_id=effective_client_id,
+        )
+        submitted = self.client().submit_order(order_data=request)
+        submitted_snapshot = self._order_snapshot(submitted)
+
+        # A protective stop should normally remain NEW/ACCEPTED, not terminal.
+        return {
+            "paper_only": True,
+            "order_kind": "protective_stop_sell",
+            "symbol": symbol.upper().strip(),
+            "qty_requested": _format_qty(qty),
+            "stop_price": _format_price(stop_price),
+            "submitted_order": submitted_snapshot,
+            "final_order": submitted_snapshot,
         }
 
     def submit_market_sell(
@@ -412,14 +564,26 @@ class AlpacaPaperBroker:
         self.assert_submission_enabled("exit")
         self.assert_account_can_trade()
 
+        effective_client_id, existing = self._existing_or_retry_client_id(client_order_id)
+        if existing:
+            return {
+                "paper_only": True,
+                "order_kind": "simple_market_sell",
+                "symbol": symbol.upper().strip(),
+                "qty_requested": _format_qty(qty),
+                "reused_existing_order": True,
+                "submitted_order": existing,
+                "final_order": existing,
+            }
+
         kwargs: dict[str, Any] = {
             "symbol": symbol.upper().strip(),
             "qty": _format_qty(qty),
             "side": OrderSide.SELL,
             "time_in_force": TimeInForce.DAY,
         }
-        if client_order_id:
-            kwargs["client_order_id"] = client_order_id
+        if effective_client_id:
+            kwargs["client_order_id"] = effective_client_id
 
         submitted = self.client().submit_order(order_data=MarketOrderRequest(**kwargs))
         submitted_snapshot = self._order_snapshot(submitted)

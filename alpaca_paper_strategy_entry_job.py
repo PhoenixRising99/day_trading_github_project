@@ -14,7 +14,10 @@ from daytrading.paper import paper_scan
 from daytrading.position_state import load_open_position_state, save_open_position_state
 from daytrading.strategy import is_entry_window_now
 
-MAX_RESEARCH_POSITION_VALUE = 24.00
+MAX_RESEARCH_POSITION_VALUE = round(
+    CONFIG.account_size * CONFIG.max_position_size_pct,
+    2,
+)
 
 # yfinance sometimes exposes candidate bars before the matching SPY context bar,
 # or returns a temporarily stale SPY response. Wait briefly after a five-minute
@@ -74,6 +77,34 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _fill_adjusted_levels(signal: dict[str, Any], fill_price: float) -> tuple[float, float]:
+    """
+    Preserve the strategy's preview stop/target distances around the actual fill.
+
+    Position sizing is decided from the accepted signal before submission. Once
+    Alpaca reports the real fill, carrying the same absolute risk/reward
+    distances forward avoids silently changing the intended R multiple because
+    of entry slippage.
+    """
+    preview = _safe_float(signal.get("entry_preview"))
+    preview_stop = _safe_float(signal.get("stop_loss_preview"))
+    preview_target = _safe_float(signal.get("take_profit_preview"))
+
+    if fill_price <= 0 or preview <= 0 or preview_stop <= 0 or preview_target <= 0:
+        return preview_stop, preview_target
+
+    stop_distance = max(preview - preview_stop, 0.0)
+    target_distance = max(preview_target - preview, 0.0)
+
+    if stop_distance <= 0 or target_distance <= 0:
+        return preview_stop, preview_target
+
+    return (
+        round(fill_price - stop_distance, 4),
+        round(fill_price + target_distance, 4),
+    )
 
 
 def _interval_timedelta() -> pd.Timedelta:
@@ -312,6 +343,21 @@ def run_single_strategy_attempt(
         )
 
     broker = AlpacaPaperBroker.from_env()
+
+    # Repository state is not the sole one-trade-per-day authority. If a prior
+    # state commit was lost, Alpaca's order history still prevents a duplicate.
+    if broker.strategy_entry_submitted_for_date(today):
+        return _write_and_return(
+            "alpaca_paper_strategy_entry",
+            {
+                "paper_only": True,
+                "submitted": False,
+                "position_opened": False,
+                "reason": "already_traded_today_broker_history",
+                "timestamp_et": now_et.isoformat(),
+            },
+            timestamp_tag,
+        )
     open_positions = broker.open_positions()
     open_orders = broker.open_orders()
     if open_positions or open_orders:
@@ -444,9 +490,12 @@ def run_single_strategy_attempt(
             pd.Timestamp.now(tz=CONFIG.timezone).strftime("%Y%m%d_%H%M%S"),
         )
 
+    effective_stop, effective_target = _fill_adjusted_levels(signal, fill_price)
+    symbol = str(signal.get("symbol", "")).upper().strip()
+
     new_state = {
         "status": "open",
-        "symbol": signal.get("symbol"),
+        "symbol": symbol,
         "qty": filled_qty,
         "qty_requested": requested_qty,
         "signal_date": today,
@@ -457,11 +506,40 @@ def run_single_strategy_attempt(
         "entry_order_status": final_status,
         "stop_loss_preview": signal.get("stop_loss_preview"),
         "take_profit_preview": signal.get("take_profit_preview"),
+        "stop_loss": effective_stop,
+        "take_profit": effective_target,
         "setup_score": signal.get("setup_score"),
         "client_order_id": client_order_id,
         "entry_order": order_result,
         "market_data_alignment": alignment,
     }
+
+    # Persist the filled position before attempting optional broker-side
+    # protection. The monitor can recover protection if that second API call
+    # fails, but it cannot safely recover a fill that was never written locally.
+    state_path = save_open_position_state(new_state)
+
+    protective_client_order_id = f"paper-protective-stop-{symbol}-{today}"
+    try:
+        protective_result = broker.submit_protective_stop_sell(
+            symbol=symbol,
+            qty=filled_qty,
+            stop_price=effective_stop,
+            confirm=confirm,
+            client_order_id=protective_client_order_id,
+        )
+        protective_order = protective_result.get("final_order", {})
+        new_state["protective_stop_client_order_id"] = protective_client_order_id
+        new_state["protective_stop_order_id"] = protective_order.get("id", "")
+        new_state["protective_stop_status"] = protective_order.get("status", "")
+        new_state["protective_stop_price"] = effective_stop
+        new_state["protective_stop_order"] = protective_result
+    except Exception as exc:  # noqa: BLE001 - monitor will repair protection.
+        new_state["protective_stop_client_order_id"] = protective_client_order_id
+        new_state["protective_stop_status"] = "submission_failed"
+        new_state["protective_stop_price"] = effective_stop
+        new_state["protective_stop_error"] = str(exc)
+
     state_path = save_open_position_state(new_state)
 
     return _write_and_return(
@@ -486,6 +564,15 @@ def run_single_strategy_attempt(
                 "position_value_preview": signal.get("position_value_preview"),
                 "stop_loss_preview": signal.get("stop_loss_preview"),
                 "take_profit_preview": signal.get("take_profit_preview"),
+                "effective_stop_loss": effective_stop,
+                "effective_take_profit": effective_target,
+            },
+            "protective_stop": {
+                "client_order_id": new_state.get("protective_stop_client_order_id"),
+                "order_id": new_state.get("protective_stop_order_id"),
+                "status": new_state.get("protective_stop_status"),
+                "price": new_state.get("protective_stop_price"),
+                "error": new_state.get("protective_stop_error"),
             },
             "order_result": order_result,
             "position_state_path": str(state_path),

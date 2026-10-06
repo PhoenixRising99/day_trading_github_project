@@ -519,8 +519,10 @@ class AlpacaPaperBroker:
         client_order_id: str,
     ) -> dict:
         """Submit an idempotent paper-only fractional DAY stop order."""
-        if confirm != ENTRY_CONFIRM_VALUE:
-            raise AlpacaSafetyError(f"Confirmation string did not match {ENTRY_CONFIRM_VALUE}.")
+        if confirm not in {ENTRY_CONFIRM_VALUE, EXIT_CONFIRM_VALUE}:
+            raise AlpacaSafetyError(
+                "Confirmation string did not authorize a paper protective exit."
+            )
         if qty <= 0 or stop_price <= 0:
             raise AlpacaSafetyError("Protective stop requires positive quantity and stop price.")
 

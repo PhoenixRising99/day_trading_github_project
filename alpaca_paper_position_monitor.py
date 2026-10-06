@@ -281,6 +281,18 @@ def _recover_orphaned_strategy_position(
         entry = matching[0]
         client_entry_id = str(entry.get("client_order_id", ""))
         signal_date = client_entry_id.rsplit("-", 1)[-1]
+
+        # Do not touch an unrelated/manual position merely because this symbol
+        # was traded by the strategy months ago. Recovery is limited to a very
+        # recent strategy entry, allowing for a weekend.
+        try:
+            entry_date = pd.Timestamp(signal_date).date()
+            age_days = (now_et.date() - entry_date).days
+        except Exception:
+            continue
+        if age_days < 0 or age_days > 4:
+            continue
+
         qty = _safe_float(position.get("qty"))
         if qty <= 0:
             continue

@@ -1,5 +1,5 @@
 {
-  "status": "open",
+  "status": "closed",
   "symbol": "AMZN",
   "qty": 0.094474,
   "qty_requested": 0.094474,
@@ -74,5 +74,58 @@
       "SPY"
     ],
     "missing_or_stale_symbols": []
+  },
+  "closed_reason": "end_of_day",
+  "closed_at_et": "2026-10-06T15:55:39.923375-04:00",
+  "exit_fill_price": 256.366,
+  "exit_filled_qty": 0.094474,
+  "exit_filled_at": "2026-10-06 19:55:40.838379+00:00",
+  "exit_order_status": "filled",
+  "realized_pnl": 0.248089,
+  "exit_order": {
+    "paper_only": true,
+    "order_kind": "simple_market_sell",
+    "symbol": "AMZN",
+    "qty_requested": "0.094474",
+    "submitted_order": {
+      "id": "7153ec8b-fe78-46a2-8db0-4fbb77266534",
+      "client_order_id": "paper-exit-AMZN-2026-10-06",
+      "symbol": "AMZN",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "pending_new",
+      "qty": "0.094474",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0",
+      "filled_avg_price": null,
+      "submitted_at": "2026-10-06 19:55:40.835728+00:00",
+      "filled_at": null,
+      "canceled_at": null,
+      "failed_at": null
+    },
+    "final_order": {
+      "id": "7153ec8b-fe78-46a2-8db0-4fbb77266534",
+      "client_order_id": "paper-exit-AMZN-2026-10-06",
+      "symbol": "AMZN",
+      "side": "sell",
+      "order_type": "market",
+      "order_class": "simple",
+      "time_in_force": "day",
+      "status": "filled",
+      "qty": "0.094474",
+      "notional": null,
+      "limit_price": null,
+      "stop_price": null,
+      "filled_qty": "0.094474",
+      "filled_avg_price": "256.366",
+      "submitted_at": "2026-10-06 19:55:40.835728+00:00",
+      "filled_at": "2026-10-06 19:55:40.838379+00:00",
+      "canceled_at": null,
+      "failed_at": null
+    }
   }
 }

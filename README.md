@@ -1,165 +1,151 @@
-# Day-Trading Paper Observation Scanner
+# Day-Trading Research / Alpaca Paper Execution
 
-This is the GitHub Actions version of the frozen V9/V10/V11 paper-observation strategy.
+This repository runs a **paper-only** implementation of the frozen V9/V10/V11
+morning VWAP-hold strategy. Alpaca paper trading is the canonical forward-test
+execution record.
 
-It is designed for:
+## Safety boundary
 
-- Cloud-based scheduled paper scans
-- Signal logging
-- Manual review
-- Forward observation
+- Alpaca is always initialized with `paper=True`.
+- Live trading is intentionally unsupported.
+- Entries and exits require explicit paper-order enable switches.
+- Maximum research position value is derived from the $120 research account and
+  20% position cap (currently $24).
+- Maximum one strategy trade per day.
+- Maximum one tracked open strategy position.
+- A broker-side fractional DAY stop order protects each filled position.
+- Software logic still handles take-profit, VWAP/EMA exits, and end-of-day exits.
+- Broker state is reconciled on every trading-session cycle.
 
-It is **not** designed for:
-
-- Live trading
-- Brokerage login
-- Automatic order submission
-- SoFi account control
-
-No brokerage credentials are used anywhere in this project.
-
-## Strategy status
-
-The strategy rules are intentionally frozen from the V9/V10/V11 notebook version:
-
-- Watchlist: `SPY`, `AAPL`, `MSFT`
-- Timeframe: 5-minute candles
-- Entry window: 10:15 AM - 10:59 AM Eastern
-- Setup type: morning VWAP-hold continuation
-- Paper only
-- Max one trade per day in the original backtest logic
-- Manual review required
-
-## Folder structure
+Required GitHub secrets:
 
 ```text
-.
-├─ .github/
-│  └─ workflows/
-│     └─ paper_scan.yml
-├─ daytrading/
-│  ├─ __init__.py
-│  ├─ config.py
-│  ├─ data_fetch.py
-│  ├─ indicators.py
-│  ├─ paper.py
-│  └─ strategy.py
-├─ data/
-│  └─ logs/
-│     ├─ scans/
-│     └─ paper_trading/
-│        └─ paper_trade_journal.csv
-├─ paper_scan_job.py
-├─ requirements.txt
-└─ README.md
+ALPACA_API_KEY
+ALPACA_SECRET_KEY
+ALPACA_PAPER_ENTRY_SUBMISSION_ENABLED=true
+ALPACA_PAPER_EXIT_SUBMISSION_ENABLED=true
 ```
 
-## How the GitHub schedule works
+The legacy `ALPACA_PAPER_ORDER_SUBMISSION_ENABLED` switch remains supported as
+a fallback.
 
-The workflow runs every 5 minutes during the strategy's entry window:
+## Frozen strategy
 
-```yaml
-schedule:
-  - cron: "16-56/5 10 * * 1-5"
-    timezone: "America/New_York"
-```
+Current research configuration:
 
-That means roughly:
+- Watchlist: `SPY, QQQ, AAPL, MSFT, NVDA, AMZN, GOOGL, META`
+- Candle interval: 5 minutes
+- Entry window: 10:15-10:59 AM America/New_York
+- Minimum setup score: 12/14
+- Long-only VWAP-hold continuation
+- One trade per day
+- No shorting, options, or margin strategy logic
+- Entry strategy parameters remain frozen while the forward sample accumulates
+
+See `daytrading/config.py` and `daytrading/strategy.py` for the exact rules.
+
+## Active execution architecture
+
+### `.github/workflows/alpaca_paper_trading_session.yml`
+
+The primary paper-execution workflow. Scheduling is externally dispatched by
+cron-job.org with `session_mode=true` because GitHub's native scheduled starts
+were too inconsistent for the entry window.
+
+Each cycle:
+
+1. Pulls current repository state.
+2. Runs an entry check only during 10:15-10:59 AM ET.
+3. Reconciles the tracked position against Alpaca.
+4. Repairs broker-side stop protection if needed.
+5. Evaluates exits using completed 5-minute candles only.
+6. Uses Alpaca's market clock for the five-minutes-before-close flattening rule.
+7. Commits broker state and the completed-trade ledger when either changes.
+
+State persistence failures are fatal; the workflow no longer silently ignores a
+failed push.
+
+### `alpaca_paper_strategy_entry_job.py`
+
+- Verifies candidate and SPY context timestamps are aligned.
+- Retries temporarily stale yfinance snapshots.
+- Checks repository state **and Alpaca order history** to enforce one trade/day.
+- Waits for the entry market order result.
+- Re-centers the strategy's stop/target distances around the actual fill.
+- Submits a fractional Alpaca DAY stop order after the fill.
+- Persists the filled position and protection metadata.
+
+### `alpaca_paper_position_monitor.py`
+
+- Reconciles local state against Alpaca every cycle.
+- Detects a filled broker-side protective stop.
+- Repairs missing/expired protective stops.
+- Rejects stale completed-bar data for software exits.
+- Cancels the protective stop before a discretionary market exit to avoid an
+  accidental oversell.
+- Re-protects residual shares after a partial exit.
+- Detects stale overnight strategy positions.
+- Uses Alpaca's exchange clock so early-close days do not rely on a hard-coded
+  4:00 PM close.
+- Will only auto-recover an orphaned broker position when a very recent
+  `paper-entry-...` order proves that this strategy created it; unrelated
+  manual paper positions are left alone.
+
+## Canonical forward-test records
+
+Current broker state:
 
 ```text
-10:16, 10:21, 10:26, 10:31, 10:36, 10:41, 10:46, 10:51, 10:56 AM ET
+data/logs/broker/alpaca_open_position_state.json
 ```
 
-For Washington/Pacific time, that is usually:
+Completed Alpaca paper trades:
 
 ```text
-7:16, 7:21, 7:26, 7:31, 7:36, 7:41, 7:46, 7:51, 7:56 AM PT
+data/logs/broker/alpaca_paper_exit_log.csv
 ```
 
-The script itself still checks the timestamp of the latest market-data bar and only marks a signal active if that data bar is inside the strategy's entry window.
+The exit log uses actual Alpaca fills and is the canonical completed-trade
+ledger.
 
-## Setup steps
-
-### 1. Create a GitHub repository
-
-Create a new repo on GitHub. A private repo is fine.
-
-### 2. Upload this project
-
-From the unzipped project folder:
-
-```bash
-git init
-git add .
-git commit -m "Initial paper observation scanner"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-git push -u origin main
-```
-
-### 3. Confirm the workflow appears
-
-Go to:
+The old CSV simulator remains available only as a **manual diagnostic**:
 
 ```text
-GitHub repo → Actions → Paper Observation Scan
-```
-
-You can click **Run workflow** to test it manually.
-
-### 4. Optional: add Discord alerts
-
-To receive phone notifications only when an active paper signal appears:
-
-1. Create a Discord webhook in a private Discord channel.
-2. In GitHub, go to: `Settings → Secrets and variables → Actions`.
-3. Add a repository secret named:
-
-```text
-DISCORD_WEBHOOK_URL
-```
-
-The scanner will still work without this secret. Without it, results are saved as GitHub artifacts and journal rows only.
-
-## Outputs
-
-Every run writes scan output under:
-
-```text
-data/logs/scans/
-```
-
-GitHub uploads these as workflow artifacts for 14 days.
-
-If an active signal appears, it is appended to:
-
-```text
+.github/workflows/paper_scan.yml
 data/logs/paper_trading/paper_trade_journal.csv
 ```
 
-The workflow commits the journal back to the repository only when the journal changes.
+It is intentionally no longer scheduled because an independently fetched
+yfinance simulation can diverge from actual Alpaca execution and should not be
+treated as a second source of truth.
 
-## Manual local run
+## Market data
 
-You can also run the scanner locally:
+Strategy calculations use yfinance. It is free research data and can be stale,
+incomplete, or rate-limited. Entry execution therefore requires exact
+candidate/SPY timestamp alignment. Exit logic ignores stale completed-bar data;
+the resting Alpaca stop remains the downside fail-safe while software data is
+unavailable.
 
-```bash
-pip install -r requirements.txt
-python paper_scan_job.py --period 5d --notes "local test"
-```
+## Continuous checks
 
-## Important limitations
+`.github/workflows/ci.yml` runs on main, pull requests, and ChatGPT hardening
+branches. It:
 
-- yfinance/free market data can be delayed, incomplete, or rate-limited.
-- GitHub scheduled jobs can be delayed by runner availability.
-- This is suitable for paper-observation research, not live trade execution.
-- No order should be submitted without manual review.
+- installs the pinned dependency ranges,
+- compiles the Python sources,
+- imports the critical execution modules,
+- checks key frozen strategy invariants.
 
-## Paper-observation rule
+## Historical files
 
-Do not tune the strategy again until you have at least:
+Files such as `PATCH_NOTES.md`, `COMPLETED_BAR_PATCH_NOTES.md`,
+`APPLY_PATCH.md`, and `ALPACA_FRACTIONAL_BRACKET_FIX_NOTES.md` document
+earlier migration stages. They are historical context; this README describes
+the current architecture.
 
-- 20 completed paper trades, or
-- 20 trading days of forward observation,
+## Current research goal
 
-whichever takes longer.
+Continue paper execution until the clean Alpaca sample is large enough for
+meaningful analysis. Do not tune the strategy from a handful of trades. Review
+at roughly 25-30 completed trades, with a stronger decision point around 50.

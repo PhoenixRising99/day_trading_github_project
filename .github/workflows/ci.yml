@@ -1,0 +1,58 @@
+name: Python Safety Checks
+
+on:
+  push:
+    branches:
+      - main
+      - "chatgpt/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  python-safety-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: |
+          python -m compileall -q             daytrading             alpaca_connection_check.py             alpaca_paper_order_test.py             alpaca_paper_strategy_entry_job.py             alpaca_paper_position_monitor.py             paper_scan_job.py
+
+      - name: Import critical trading modules
+        run: |
+          python - <<'PY'
+          import alpaca_paper_strategy_entry_job
+          import alpaca_paper_position_monitor
+          from daytrading.broker import AlpacaPaperBroker
+          from daytrading.config import CONFIG, STRATEGY_PARAMS, WATCHLIST
+
+          assert CONFIG.max_trades_per_day == 1
+          assert CONFIG.max_open_positions == 1
+          assert STRATEGY_PARAMS.min_score == 12
+          assert "SPY" in WATCHLIST
+          assert AlpacaPaperBroker is not None
+          print("Critical module import and frozen-strategy checks passed.")
+          PY

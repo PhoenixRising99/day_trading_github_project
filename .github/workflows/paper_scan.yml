@@ -1,21 +1,9 @@
-name: Paper Observation Scan
+name: Paper Observation Diagnostic
 
 on:
+  # Manual diagnostic only. Alpaca paper execution is the canonical forward
+  # record; this independent yfinance simulator is intentionally not scheduled.
   workflow_dispatch:
-
-  # GitHub Actions cron runs in UTC in this workflow.
-  #
-  # Entry collector:
-  # - 12:00 UTC = 8:00 AM ET during U.S. daylight time.
-  # - Python waits/scans until the strategy window closes at 10:59 AM ET.
-  # - Only one entry collector is scheduled to avoid stale-journal race conditions.
-  #
-  # Exit monitor:
-  # - Every 15 minutes from 15:00-21:45 UTC.
-  # - Python updates open paper trades only after the entry window closes.
-  schedule:
-    - cron: "0 12 * * 1-5"
-    - cron: "*/15 15-21 * * 1-5"
 
 permissions:
   contents: write

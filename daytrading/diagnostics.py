@@ -140,10 +140,12 @@ def write_event(kind: str, result: dict[str, Any], *,
         "state_protective_stop_status": state.get("protective_stop_status"),
         "market_data_alignment": result.get("market_data_alignment"),
         "alignment_attempts": result.get("alignment_attempts"),
-        "scan_summary": [
-            {k: _simple(row.get(k)) for k in (*SCAN_FIELDS, "aligned_to_expected_bar") if k in row}
-            for row in (result.get("scan_summary") or []) if isinstance(row, dict)
-        ],
+        "scan_summary": (
+            [
+                {k: _simple(row.get(k)) for k in (*SCAN_FIELDS, "aligned_to_expected_bar") if k in row}
+                for row in result["scan_summary"] if isinstance(row, dict)
+            ] if result.get("scan_summary") is not None else None
+        ),
         "selected_signal": selected_features(detail),
         "evaluated_bar": result.get("evaluated_bar"),
         "expected_bar": result.get("expected_bar"),

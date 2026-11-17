@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: "*/15 13-21 * * 1-5"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Alpaca Paper Trading Session"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -21,6 +24,8 @@ env:
 
 jobs:
   stale-monitor-check:
+    # For workflow_run events, only notify on failure/cancellation/startup failure.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -33,4 +38,12 @@ jobs:
           python-version: "3.11"
 
       - name: Check recent committed monitor heartbeat
+        if: ${{ github.event_name != 'workflow_run' }}
         run: python -m daytrading.health_watchdog
+
+      - name: Alert on failed trading workflow
+        if: ${{ github.event_name == 'workflow_run' }}
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: python -m daytrading.alert_failure

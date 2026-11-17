@@ -7,7 +7,7 @@ on:
     - cron: "*/15 13-21 * * 1-5"
   workflow_dispatch:
   workflow_run:
-    workflows: ["Alpaca Paper Trading Session"]
+    workflows: ["Alpaca Paper Trading Session", "Paper Broker Reconciliation"]
     types: [completed]
 
 permissions:

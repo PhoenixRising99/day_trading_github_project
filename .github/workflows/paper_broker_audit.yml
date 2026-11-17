@@ -1,0 +1,50 @@
+name: Paper Broker Reconciliation
+
+on:
+  push:
+    branches:
+      - "chatgpt/observability-monitoring-20261116"
+  workflow_dispatch:
+  schedule:
+    # After US regular trading hours (17:00 ET standard / 18:00 ET daylight).
+    - cron: "0 22 * * 1-5"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ALPACA_PAPER: "true"
+  ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+
+jobs:
+  reconcile-paper-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Inspect paper positions and protective orders without submitting trades
+        run: python -m audit.broker_reconcile
+
+      - name: Upload reconciliation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: broker-reconciliation-${{ github.run_id }}
+          path: audit_outputs/broker_reconciliation.json
+          retention-days: 30

@@ -130,9 +130,10 @@ jobs:
             exit 0
           fi
 
-          # Bounded cron-job.org session. 220 minutes stays below the user's
-          # observed four-hour limit. Use a later cron-job.org dispatch to hand
-          # off monitoring when a position remains open.
+          # Bounded session: leave headroom for state commit and a GitHub
+          # workflow_dispatch handoff before the job timeout. If a position
+          # remains open, the current run dispatches a successor immediately
+          # rather than relying on a later cron-job.org dispatch.
           LOOP_START="$(date +%s)"
           MAX_SESSION_SECONDS=13200
 
@@ -164,6 +165,26 @@ jobs:
 
             sleep 300
           done
+
+          # Commit the final snapshot before a successor checks out main.
+          commit_state_if_changed
+
+          # Dispatch only when the bounded runtime caused a handoff, a broker
+          # position is still tracked, and the exchange session has not closed.
+          # A normal no-trade session or end-of-day session does not self-dispatch.
+          NOW_ET="$(TZ=America/New_York date +%H:%M)"
+          STATUS="$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('status',''))" 2>/dev/null || echo "none")"
+          ELAPSED=$(( $(date +%s) - LOOP_START ))
+          if [ "$ELAPSED" -gt "$MAX_SESSION_SECONDS" ] && \
+             [ "$STATUS" = "open" ] && \
+             [ "$NOW_ET" \< "15:55" ]; then
+            echo "Open paper position needs continued monitoring; dispatching successor."
+            # GITHUB_TOKEN workflow_dispatch explicitly triggers a new Actions
+            # run. The workflow's concurrency group serializes both sessions.
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/alpaca_paper_trading_session.yml/dispatches" \
+              -f ref=main \
+              -f "inputs[session_mode]=true"
+          fi
 
       - name: Upload session artifacts
         if: always()

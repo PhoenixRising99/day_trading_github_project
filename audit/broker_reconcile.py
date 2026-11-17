@@ -69,10 +69,10 @@ def reconcile(broker: AlpacaPaperBroker, state: dict[str, Any]) -> dict:
         "tracked_signal_date": state.get("signal_date"),
         "tracked_qty": state.get("qty"),
         "broker_tracked_symbol_qty": matching.get("qty") if matching else None,
-        "broker_position_symbols": sorted(str(p.get("symbol")) for p in positions),
+        # Avoid exposing unrelated paper-account holdings in public Actions logs.
+        "unrelated_broker_position_count": len(positions) - int(bool(matching)),
         "open_strategy_orders": [
-            {"id": o.get("id"), "client_order_id": o.get("client_order_id"),
-             "symbol": o.get("symbol"), "side": o.get("side"),
+            {"symbol": o.get("symbol"), "side": o.get("side"),
              "order_type": o.get("order_type"), "status": o.get("status")}
             for o in strategy_orders
         ],

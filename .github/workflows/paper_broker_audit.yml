@@ -1,9 +1,6 @@
 name: Paper Broker Reconciliation
 
 on:
-  push:
-    branches:
-      - "chatgpt/observability-monitoring-20261116"
   workflow_dispatch:
   schedule:
     # After US regular trading hours (17:00 ET standard / 18:00 ET daylight).

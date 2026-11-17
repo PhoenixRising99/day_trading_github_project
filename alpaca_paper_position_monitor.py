@@ -9,6 +9,7 @@ import pandas as pd
 
 from daytrading.broker import AlpacaPaperBroker
 from daytrading.config import CONFIG
+from daytrading.diagnostics import write_event
 from daytrading.data_fetch import fetch_intraday_data
 from daytrading.indicators import add_indicators
 from daytrading.position_state import load_open_position_state, save_open_position_state
@@ -30,6 +31,10 @@ def _json_write(name: str, payload: dict[str, Any], timestamp_tag: str) -> Path:
 def _write_and_return(name: str, result: dict[str, Any], timestamp_tag: str) -> dict[str, Any]:
     path = _json_write(name, result, timestamp_tag)
     result["result_path"] = str(path)
+    event = write_event("monitor", result)
+    result["audit_event_id"] = event["id"]
+    if "monitoring_gap_minutes" in event:
+        result["monitoring_gap_minutes"] = event["monitoring_gap_minutes"]
     print(json.dumps(result, indent=2, default=str))
     return result
 
@@ -261,6 +266,14 @@ def _record_closed_state(
             "evaluated_bar": evaluated_bar,
             "evaluated_close": evaluated_close,
             "order_status": order_status,
+            "setup_score": state.get("setup_score"),
+            "setup_max_score": state.get("setup_max_score"),
+            "entry_decision_id": state.get("entry_decision_id"),
+            "entry_features_json": json.dumps(state.get("entry_features", {}), sort_keys=True, default=str),
+            "entry_alignment_json": json.dumps(state.get("market_data_alignment", {}), sort_keys=True, default=str),
+            "exit_decision_at_et": now_et.isoformat(),
+            "exit_order_filled_at": final_order.get("filled_at", ""),
+            "protective_stop_final_status": state.get("protective_stop_status"),
         }
     )
     return state
@@ -555,6 +568,7 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
                 "take_profit": take_profit,
                 "protective_stop_status": protective.get("status"),
                 "market_cutoff_et": cutoff.isoformat() if cutoff is not None else None,
+                "data_error_type": "market_data_fetch_error" if data_error else None,
                 "data_error": data_error or None,
                 "timestamp_et": now_et.isoformat(),
             },

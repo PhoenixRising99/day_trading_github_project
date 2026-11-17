@@ -28,6 +28,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # Required for GITHUB_TOKEN workflow_dispatch successor sessions
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -35,6 +36,7 @@ env:
   ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
   ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
   ALPACA_PAPER: "true"
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
   # Backward-compatible global switch.
   ALPACA_PAPER_ORDER_SUBMISSION_ENABLED: ${{ secrets.ALPACA_PAPER_ORDER_SUBMISSION_ENABLED }}
@@ -99,6 +101,8 @@ jobs:
             [ -f "$STATE_FILE" ] && git add "$STATE_FILE"
             [ -f data/logs/broker/alpaca_paper_exit_log.csv ] && \
               git add data/logs/broker/alpaca_paper_exit_log.csv
+            # Persist the per-cycle entry decisions and position heartbeats.
+            [ ! -d data/logs/diagnostics ] || git add -A data/logs/diagnostics
 
             if ! git diff --cached --quiet; then
               git commit -m "Update Alpaca paper position state [skip ci]"
@@ -112,17 +116,28 @@ jobs:
 
           run_one_cycle() {
             NOW_ET="$(TZ=America/New_York date +%H:%M)"
-
+            local entry_rc=0 monitor_rc=0
+            # Whether the scanner, monitor, or diagnostics fails, persist
+            # the broker state first so the next job can reconcile it.
+            set +e
             if [ "$NOW_ET" \> "10:14" ] && [ "$NOW_ET" \< "11:00" ]; then
               python alpaca_paper_strategy_entry_job.py --confirm "$CONFIRM_ENTRY"
+              entry_rc=$?
             elif [ "$ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT" = "true" ]; then
               python alpaca_paper_strategy_entry_job.py \
                 --confirm "$CONFIRM_ENTRY" \
                 --allow-outside-entry-window
+              entry_rc=$?
             fi
 
             python alpaca_paper_position_monitor.py --confirm "$CONFIRM_EXIT"
+            monitor_rc=$?
+            set -e
             commit_state_if_changed
+            if [ "$entry_rc" -ne 0 ] || [ "$monitor_rc" -ne 0 ]; then
+              echo "::error::Paper trading cycle failed (entry=${entry_rc}, monitor=${monitor_rc}); broker state was committed."
+              return 1
+            fi
           }
 
           # Manual/default dispatch: one quick cycle, then exit.

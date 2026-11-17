@@ -137,6 +137,21 @@ def _protective_snapshot(broker: AlpacaPaperBroker, state: dict[str, Any]) -> di
     return {}
 
 
+def _save_protective_snapshot(state: dict[str, Any], snapshot: dict) -> None:
+    """Persist the broker's latest stop state, not its original NEW snapshot."""
+    status = str(snapshot.get("status", "")).lower()
+    if not status:
+        return
+    state["protective_stop_status"] = status
+    if snapshot.get("id"):
+        state["protective_stop_order_id"] = snapshot["id"]
+    recorded = state.get("protective_stop_order")
+    if isinstance(recorded, dict):
+        recorded["final_order"] = snapshot
+    state.pop("protective_stop_error", None)
+    save_open_position_state(state)
+
+
 def _cancel_protective_stop(broker: AlpacaPaperBroker, state: dict[str, Any]) -> dict:
     snap = _protective_snapshot(broker, state)
     if not snap:
@@ -144,9 +159,12 @@ def _cancel_protective_stop(broker: AlpacaPaperBroker, state: dict[str, Any]) ->
 
     status = str(snap.get("status", "")).lower()
     if status in {"filled", "canceled", "cancelled", "expired", "rejected"}:
+        _save_protective_snapshot(state, snap)
         return snap
 
-    return broker.cancel_order(str(snap.get("id", "")))
+    result = broker.cancel_order(str(snap.get("id", "")))
+    _save_protective_snapshot(state, result)
+    return result
 
 
 def _ensure_protective_stop(
@@ -374,6 +392,7 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
     if symbol not in open_positions:
         protective_status = str(protective.get("status", "")).lower()
         if protective_status == "filled":
+            _save_protective_snapshot(state, protective)
             filled_qty = _safe_float(protective.get("filled_qty"))
             exit_fill_price = _safe_float(protective.get("filled_avg_price"))
             client_id = str(protective.get("client_order_id", "")) or str(
@@ -407,6 +426,29 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
                 },
                 timestamp_tag,
             )
+
+        # An orphaned resting stop is not safe merely because the position
+        # disappeared. Confirm its cancellation before marking reconciliation
+        # complete; otherwise it could sell after the position is gone.
+        if state.get("protective_stop_order_id") or state.get("protective_stop_client_order_id"):
+            if protective_status not in {"canceled", "cancelled", "expired", "rejected"}:
+                protective = _cancel_protective_stop(broker, state)
+                protective_status = str(protective.get("status", "")).lower()
+            if protective_status not in {"canceled", "cancelled", "expired", "rejected"}:
+                state["protective_stop_error"] = "stop cancellation unconfirmed during reconciliation"
+                save_open_position_state(state)
+                return _write_and_return(
+                    "alpaca_paper_position_monitor",
+                    {
+                        "paper_only": True,
+                        "action": "reconciliation_blocked_unconfirmed_stop",
+                        "symbol": symbol,
+                        "protective_order": protective,
+                        "timestamp_et": now_et.isoformat(),
+                    },
+                    timestamp_tag,
+                )
+            _save_protective_snapshot(state, protective)
 
         state["status"] = "closed"
         state["closed_reason"] = "reconciled_no_broker_position"
@@ -523,6 +565,45 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
     # avoid a later oversell. If it filled during cancellation, reconciliation
     # below will observe no remaining broker position.
     protective_cancel = _cancel_protective_stop(broker, state)
+    cancel_status = str(protective_cancel.get("status", "")).lower()
+
+    # A cancel request is not a confirmed cancellation. If Alpaca times out
+    # or still has the stop pending, placing a second SELL risks an oversell.
+    if state.get("protective_stop_order_id") or state.get("protective_stop_client_order_id"):
+        if cancel_status not in {"canceled", "cancelled", "expired", "rejected", "filled"}:
+            state["protective_stop_error"] = "protective cancellation not confirmed"
+            save_open_position_state(state)
+            return _write_and_return(
+                "alpaca_paper_position_monitor",
+                {
+                    "paper_only": True,
+                    "action": "exit_blocked_unconfirmed_protective_cancel",
+                    "symbol": symbol,
+                    "exit_reason": exit_reason,
+                    "protective_cancel": protective_cancel,
+                    "timestamp_et": now_et.isoformat(),
+                },
+                timestamp_tag,
+            )
+    else:
+        # A missing local stop ID does not prove that no stop is working.
+        open_sell_orders = [
+            order for order in broker.open_orders()
+            if str(order.get("symbol", "")).upper() == symbol
+            and str(order.get("side", "")).lower() == "sell"
+        ]
+        if open_sell_orders:
+            return _write_and_return(
+                "alpaca_paper_position_monitor",
+                {
+                    "paper_only": True,
+                    "action": "exit_blocked_untracked_sell_orders",
+                    "symbol": symbol,
+                    "open_sell_orders": open_sell_orders,
+                    "timestamp_et": now_et.isoformat(),
+                },
+                timestamp_tag,
+            )
 
     remaining_before_exit = {
         str(position.get("symbol", "")).upper(): position
@@ -561,6 +642,22 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
                 "reason": "position_closed_during_protective_cancel",
                 "symbol": symbol,
                 "protective_cancel": protective_cancel,
+                "timestamp_et": now_et.isoformat(),
+            },
+            timestamp_tag,
+        )
+
+    # A filled protective stop is itself the exit. Broker position snapshots
+    # may lag the fill briefly; never add a market SELL in that interval.
+    if cancel_status == "filled":
+        return _write_and_return(
+            "alpaca_paper_position_monitor",
+            {
+                "paper_only": True,
+                "action": "awaiting_broker_position_reconciliation",
+                "reason": "protective_stop_filled_but_broker_position_still_visible",
+                "symbol": symbol,
+                "protective_order": protective_cancel,
                 "timestamp_et": now_et.isoformat(),
             },
             timestamp_tag,

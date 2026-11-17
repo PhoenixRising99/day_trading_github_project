@@ -45,6 +45,30 @@ def summarize_ledger(ledger: pd.DataFrame) -> dict:
     losers = profits[profits < 0]
     gross_win = float(winners.sum())
     gross_loss = float(-losers.sum())
+    # Historical exits did not preserve setup scores. Never impute them.
+    scores = pd.to_numeric(ledger.get("setup_score", pd.Series(index=ledger.index, dtype=float)),
+                           errors="coerce")
+    score_coverage = int(scores.notna().sum())
+    by_score = []
+    if score_coverage:
+        scored = ledger.loc[scores.notna()].copy()
+        scored["score_for_group"] = scores.loc[scores.notna()].astype(int)
+        for score, group in scored.groupby("score_for_group"):
+            by_score.append({
+                "score": int(score),
+                "trades": len(group),
+                "wins": int((group["realized_pnl"] > 0).sum()),
+                "realized_pnl": round(float(group["realized_pnl"].sum()), 6),
+            })
+    # Execution-close discrepancy is NOT execution slippage. The evaluated bar
+    # predates order submission and can differ in fast markets.
+    observed_close = pd.to_numeric(
+        ledger.get("evaluated_close", pd.Series(index=ledger.index, dtype=float)),
+        errors="coerce"
+    )
+    exit_fill = pd.to_numeric(ledger["exit_fill_price"], errors="coerce")
+    valid = (observed_close > 0) & (exit_fill > 0)
+    fill_minus_bar_bps = ((exit_fill[valid] / observed_close[valid]) - 1) * 10000
     return {
         "completed_trades": int(len(ledger)),
         "winners": int(len(winners)),
@@ -53,6 +77,15 @@ def summarize_ledger(ledger: pd.DataFrame) -> dict:
         "average_pnl": round(float(profits.mean()), 6) if len(profits) else None,
         "win_rate": round(float(len(winners) / len(profits)), 5) if len(profits) else None,
         "profit_factor": round(gross_win / gross_loss, 5) if gross_loss else None,
+        "setup_score_coverage": score_coverage,
+        "setup_score_missing": len(ledger) - score_coverage,
+        "by_setup_score": by_score,
+        "evaluated_close_vs_fill": {
+            "observations": int(valid.sum()),
+            "mean_bps": round(float(fill_minus_bar_bps.mean()), 3) if valid.any() else None,
+            "median_bps": round(float(fill_minus_bar_bps.median()), 3) if valid.any() else None,
+            "warning": "Difference from evaluated candle close includes price movement; not pure slippage.",
+        },
         "by_exit": [
             {
                 "reason": str(reason),
@@ -202,6 +235,32 @@ def summarize_replay(results: list[dict], errors: list[dict]) -> dict:
     matched_15 = [
         r for r in matches if r["baseline_exit_timing_difference_minutes"] <= 15
     ]
+    # Paired deltas are meaningful only within this historical replay.
+    # Show the trade-by-trade distribution so a single winner cannot
+    # masquerade as a robust strategy improvement.
+    variations = {}
+    for name, field in (("three_bar_vwap", "vwap3_delta"),
+                        ("two_bar_ema", "ema2_delta")):
+        changed = [r for r in results if abs(r[field]) > 0.000001]
+        variations[name] = {
+            "changed_trades": len(changed),
+            "improved": sum(r[field] > 0 for r in changed),
+            "worsened": sum(r[field] < 0 for r in changed),
+            "delta_total": round(sum(r[field] for r in changed), 6),
+            "largest_positive_delta": round(max((r[field] for r in changed), default=0), 6),
+            "largest_negative_delta": round(min((r[field] for r in changed), default=0), 6),
+        }
+    differences = [
+        {
+            "date": r["date"],
+            "symbol": r["symbol"],
+            "actual_reason": r["actual_reason"],
+            "modeled_reason": r["baseline"]["reason"],
+            "timing_difference_minutes": r["baseline_exit_timing_difference_minutes"],
+        }
+        for r in results if (not r["baseline_reason_matches"]
+                             or r["baseline_exit_timing_difference_minutes"] > 15)
+    ]
     return {
         "source": "historical Alpaca SIP 5-minute consolidated feed",
         "modeled_friction_bps_per_exit": FRICTION_BPS,
@@ -222,6 +281,8 @@ def summarize_replay(results: list[dict], errors: list[dict]) -> dict:
         "vwap3_vs_baseline_delta": round(sum(r["vwap3_delta"] for r in results), 6),
         "ema2_vs_baseline_delta": round(sum(r["ema2_delta"] for r in results), 6),
         "baseline_fidelity_rate": round(len(matched_15) / len(results), 4) if results else None,
+        "counterfactual_impact": variations,
+        "baseline_divergences": differences,
         "replay_sufficient_for_strategy_choice": False,
     }
 

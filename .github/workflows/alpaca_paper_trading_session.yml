@@ -75,6 +75,7 @@ jobs:
           CONFIRM_EXIT_INPUT: ${{ github.event.inputs.confirm_exit }}
           ALLOW_OUTSIDE_ENTRY_WINDOW_INPUT: ${{ github.event.inputs.allow_outside_entry_window }}
           SESSION_MODE_INPUT: ${{ github.event.inputs.session_mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 

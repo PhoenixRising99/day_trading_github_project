@@ -39,9 +39,13 @@ jobs:
 
       - name: Compile Python sources
         run: |
-          python -m compileall -q             daytrading             alpaca_connection_check.py             alpaca_paper_order_test.py             alpaca_paper_strategy_entry_job.py             alpaca_paper_position_monitor.py             paper_scan_job.py
+          python -m compileall -q \
+            daytrading audit tests \
+            alpaca_connection_check.py alpaca_paper_order_test.py \
+            alpaca_paper_strategy_entry_job.py alpaca_paper_position_monitor.py \
+            paper_scan_job.py
 
-      - name: Run protective-order safety regression tests
+      - name: Run all broker safety and observability regression tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Import critical trading modules

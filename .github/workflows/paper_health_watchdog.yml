@@ -1,0 +1,55 @@
+name: Paper Trading Health Watchdog
+
+on:
+  # Best-effort independent heartbeat check. GitHub native cron can be late:
+  # the broker-side stop order remains the actual downside fallback.
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Alpaca Paper Trading Session", "Paper Broker Reconciliation"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: alpaca-paper-health-watchdog
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+jobs:
+  stale-monitor-check:
+    # For workflow_run events, only notify on failure/cancellation/startup failure.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out paper monitoring state
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install project imports for watchdog
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check recent committed monitor heartbeat
+        if: ${{ github.event_name != 'workflow_run' }}
+        run: python -m daytrading.health_watchdog
+
+      - name: Alert on failed trading workflow
+        if: ${{ github.event_name == 'workflow_run' }}
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: python -m daytrading.alert_failure

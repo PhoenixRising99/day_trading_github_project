@@ -10,6 +10,7 @@ import pandas as pd
 
 from daytrading.broker import AlpacaPaperBroker
 from daytrading.config import CONFIG, STRATEGY_PARAMS, WATCHLIST
+from daytrading.diagnostics import compact_scan, selected_features, write_event
 from daytrading.paper import paper_scan
 from daytrading.position_state import load_open_position_state, save_open_position_state
 from daytrading.strategy import is_entry_window_now
@@ -48,6 +49,10 @@ def _json_write(name: str, payload: dict[str, Any], timestamp_tag: str) -> Path:
 def _write_and_return(name: str, result: dict[str, Any], timestamp_tag: str) -> dict[str, Any]:
     path = _json_write(name, result, timestamp_tag)
     result["result_path"] = str(path)
+    # This event is committed to GitHub with broker state after every cycle.
+    # Persistence failures are surfaced to the workflow, not silently dropped.
+    event = write_event("entry", result)
+    result["audit_event_id"] = event["id"]
     print(json.dumps(result, indent=2, default=str))
     return result
 
@@ -383,6 +388,8 @@ def run_single_strategy_attempt(
         alignment_attempts,
     ) = _run_aligned_scan(period=period)
 
+    scan_summary = compact_scan(full_scan, alignment)
+
     if not alignment.get("market_context_aligned", False):
         return _write_and_return(
             "alpaca_paper_strategy_entry",
@@ -391,6 +398,7 @@ def run_single_strategy_attempt(
                 "submitted": False,
                 "position_opened": False,
                 "reason": "market_context_stale_after_retries",
+                "scan_summary": scan_summary,
                 "scan_path": str(scan_path),
                 "market_data_alignment": alignment,
                 "alignment_attempts": alignment_attempts,
@@ -411,6 +419,7 @@ def run_single_strategy_attempt(
                 "submitted": False,
                 "position_opened": False,
                 "reason": "no_active_signal",
+                "scan_summary": scan_summary,
                 "scan_path": str(scan_path),
                 "market_data_alignment": alignment,
                 "alignment_attempts": alignment_attempts,
@@ -436,6 +445,8 @@ def run_single_strategy_attempt(
                 "submitted": False,
                 "position_opened": False,
                 "reason": "blocked_position_value_exceeds_research_limit",
+                "selected_signal": selected_features(signal),
+                "scan_summary": scan_summary,
                 "position_value": position_value,
                 "max_position_value": MAX_RESEARCH_POSITION_VALUE,
                 "scan_path": str(scan_path),
@@ -453,6 +464,8 @@ def run_single_strategy_attempt(
                 "submitted": False,
                 "position_opened": False,
                 "reason": "blocked_non_positive_quantity",
+                "selected_signal": selected_features(signal),
+                "scan_summary": scan_summary,
                 "scan_path": str(scan_path),
                 "market_data_alignment": alignment,
                 "timestamp_et": pd.Timestamp.now(tz=CONFIG.timezone).isoformat(),
@@ -481,6 +494,7 @@ def run_single_strategy_attempt(
                 "submitted": True,
                 "position_opened": False,
                 "reason": f"entry_not_filled_{final_status or 'unknown'}",
+                "scan_summary": scan_summary,
                 "timestamp_et": pd.Timestamp.now(tz=CONFIG.timezone).isoformat(),
                 "scan_path": str(scan_path),
                 "market_data_alignment": alignment,
@@ -509,6 +523,9 @@ def run_single_strategy_attempt(
         "stop_loss": effective_stop,
         "take_profit": effective_target,
         "setup_score": signal.get("setup_score"),
+        "setup_max_score": signal.get("setup_max_score"),
+        "entry_features": selected_features(signal),
+        "entry_decision_id": client_order_id,
         "client_order_id": client_order_id,
         "entry_order": order_result,
         "market_data_alignment": alignment,
@@ -549,6 +566,7 @@ def run_single_strategy_attempt(
             "submitted": True,
             "position_opened": True,
             "reason": "entry_filled",
+            "scan_summary": scan_summary,
             "timestamp_et": pd.Timestamp.now(tz=CONFIG.timezone).isoformat(),
             "scan_path": str(scan_path),
             "market_data_alignment": alignment,
@@ -559,6 +577,12 @@ def run_single_strategy_attempt(
                 "signal_date": signal.get("signal_date"),
                 "setup_score": signal.get("setup_score"),
                 "setup_max_score": signal.get("setup_max_score"),
+                "passed_checks": signal.get("passed_checks"),
+                "failed_checks": signal.get("failed_checks"),
+                "rsi_14": signal.get("rsi_14"),
+                "volume_ratio": signal.get("volume_ratio"),
+                "vwap_distance_atr": signal.get("vwap_distance_atr"),
+                "market_filter_ok": signal.get("market_filter_ok"),
                 "entry_preview": signal.get("entry_preview"),
                 "shares_preview": signal.get("shares_preview"),
                 "position_value_preview": signal.get("position_value_preview"),

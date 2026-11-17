@@ -66,7 +66,10 @@ def summarize_ledger(ledger: pd.DataFrame) -> dict:
         ledger.get("evaluated_close", pd.Series(index=ledger.index, dtype=float)),
         errors="coerce"
     )
-    exit_fill = pd.to_numeric(ledger["exit_fill_price"], errors="coerce")
+    exit_fill = pd.to_numeric(
+        ledger.get("exit_fill_price", pd.Series(index=ledger.index, dtype=float)),
+        errors="coerce"
+    )
     valid = (observed_close > 0) & (exit_fill > 0)
     fill_minus_bar_bps = ((exit_fill[valid] / observed_close[valid]) - 1) * 10000
     return {

@@ -57,12 +57,6 @@ def summarize_coverage(events: list[dict]) -> dict:
             slot for slot in SLOTS
             if stop_time is None or slot <= stop_time.strftime("%H:%M")
         ]
-        seen = {
-            datetime.fromisoformat(e["timestamp_et"]).astimezone(ET).strftime("%H:%M")[:4] +
-            str((datetime.fromisoformat(e["timestamp_et"]).astimezone(ET).minute // 5) * 5).zfill(2)
-            for e in entries
-            if e.get("timestamp_et")
-        }
         # Compact and unambiguous 5-minute slot floors.
         seen = {
             f"{datetime.fromisoformat(e['timestamp_et']).astimezone(ET).hour:02d}:"

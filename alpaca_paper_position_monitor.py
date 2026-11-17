@@ -647,6 +647,22 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
             timestamp_tag,
         )
 
+    # A filled protective stop is itself the exit. Broker position snapshots
+    # may lag the fill briefly; never add a market SELL in that interval.
+    if cancel_status == "filled":
+        return _write_and_return(
+            "alpaca_paper_position_monitor",
+            {
+                "paper_only": True,
+                "action": "awaiting_broker_position_reconciliation",
+                "reason": "protective_stop_filled_but_broker_position_still_visible",
+                "symbol": symbol,
+                "protective_order": protective_cancel,
+                "timestamp_et": now_et.isoformat(),
+            },
+            timestamp_tag,
+        )
+
     client_order_id = f"paper-exit-{symbol}-{state.get('signal_date', '')}"
     order_result = broker.submit_market_sell(
         symbol=symbol,

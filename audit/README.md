@@ -66,3 +66,36 @@ ordering, spread, slippage, bid/ask depth, and schedule interruptions cannot be
 recovered from 5-minute candles alone. Stop fills in the replay are modeled,
 not actual Alpaca broker stop fills. Report missing/incomplete days as errors
 rather than inventing data.
+
+## New forward diagnostics and checks
+
+Each regular entry evaluation now produces a single durable, credential-free
+`entry` event and each position-monitor cycle produces a `monitor` event
+at `data/logs/diagnostics/YYYY-MM-DD.jsonl`. Candidate records preserve
+their score, passed/failed conditions, data timestamp and freshness status.
+No-signal days are classified with:
+
+    python -m audit.entry_coverage --output audit_outputs/entry_coverage.json
+
+A day is counted as a *complete observed no-signal day* only when all expected
+five-minute decision slots are represented, SPY context aligns, and candidates
+are not missing or stale. Recorded qualified but unfilled signals are flagged
+for review, not labeled automatically as missed trades. Before the deployment
+of durable logging, coverage is unknown.
+
+To inspect actual paper broker positions and orders **without modifying them**,
+run the `Paper Broker Reconciliation` GitHub workflow manually, or read its
+after-market artifacts. The job uses read endpoints and never sets submission
+enable switches. It checks the latest tracked protective stop against its
+actual Alpaca order status and flags unexpected resting strategy orders.
+
+Independent GitHub cron watchdog checks for a stale monitor heartbeat while
+the repository says a strategy position is open; it reports failures through
+GitHub Actions and, optionally, the configured Discord webhook. It is not
+guaranteed real-time protection if GitHub scheduling itself is delayed.
+
+Historical trade score coverage is reported explicitly by `audit.replay`
+rather than retroactively imputing values. The SIP replay additionally
+reports reason/timing mismatches, paired wins/losses on variant outcomes, and
+evaluated-candle-to-fill differences without labeling those differences
+pure slippage. **These diagnostics do not authorize strategy tuning.**

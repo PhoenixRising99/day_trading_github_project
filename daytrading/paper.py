@@ -363,6 +363,8 @@ def paper_scan(
                 "entry_window_open": bool(entry_window_open),
                 "setup_score": setup["score"],
                 "setup_max_score": setup["max_score"],
+                "passed_checks": ",".join(setup["passed"]),
+                "failed_checks": ",".join(setup["failed"]),
                 "reason": reason,
                 "entry_preview": round(entry_price, 4) if signal else np.nan,
                 "shares_preview": shares,

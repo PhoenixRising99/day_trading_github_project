@@ -1,6 +1,9 @@
 name: Strategy Audit (Read Only)
 
 on:
+  push:
+    branches:
+      - "chatgpt/observability-monitoring-20261116"
   workflow_dispatch:
   schedule:
     # Weekly research snapshot after Friday US market close.

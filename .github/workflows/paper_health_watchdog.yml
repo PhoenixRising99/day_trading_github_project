@@ -1,6 +1,10 @@
 name: Paper Trading Health Watchdog
 
 on:
+  # Smoke-test this read-only workflow on the development branch.
+  push:
+    branches:
+      - "chatgpt/observability-monitoring-20261116"
   # Best-effort independent heartbeat check. GitHub native cron can be late:
   # the broker-side stop order remains the actual downside fallback.
   schedule:

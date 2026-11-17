@@ -1,10 +1,10 @@
 name: Strategy Audit (Read Only)
 
 on:
-  push:
-    branches:
-      - "chatgpt/strategy-audit-20261116"
   workflow_dispatch:
+  schedule:
+    # Weekly research snapshot after Friday US market close.
+    - cron: "15 1 * * 6"
 
 permissions:
   contents: read
@@ -31,6 +31,9 @@ jobs:
           pip install -r requirements.txt
       - name: Check the trade ledger offline
         run: python -m audit.replay --no-market --output audit_outputs/offline
+
+      - name: Summarize observed scanner coverage
+        run: python -m audit.entry_coverage --output audit_outputs/entry_coverage.json
       - name: Replay historical SIP bars (read-only)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}

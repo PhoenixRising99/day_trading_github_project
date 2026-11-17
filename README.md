@@ -144,8 +144,52 @@ Files such as `PATCH_NOTES.md`, `COMPLETED_BAR_PATCH_NOTES.md`,
 earlier migration stages. They are historical context; this README describes
 the current architecture.
 
+## Paper observability and independent health checks
+
+Durable, **redacted** scanner and position-monitor decisions are stored in
+`data/logs/diagnostics/YYYY-MM-DD.jsonl`. The main workflow commits new
+records alongside trading state after each cycle. Each entry evaluation records
+setup scores, passed/failed criteria, candidate alignment and explicit reasons
+for no signal, blocked orders and unfilled orders. Every monitor cycle records
+its action, protective-stop status and available candle/exit timestamps.
+
+After the next completed trade, the canonical exit ledger additionally includes
+`setup_score`, `setup_max_score`, `entry_features_json`,
+`entry_alignment_json` and execution timestamps. **Older trades are not
+backfilled or misclassified as having zero scores.**
+
+Additional read-only workflows:
+
+- `Paper Trading Health Watchdog`: best-effort UTC-cron heartbeat check while
+  the repository tracks an open position; also watches unsuccessful broker and
+  trading workflow completions, including startup failures.
+- `Paper Broker Reconciliation`: after-close and manual inspection of actual
+  Alpaca paper positions, open strategy orders and protective-stop final
+  status, without submitting or canceling orders.
+- `Strategy Audit (Read Only)`: weekly/manually recomputes executed trade
+  metrics, SIP-bar historical replay and scanner-coverage diagnostics.
+- `python -m audit.entry_coverage`: classifies zero-trade days as **verified**
+  only when all nine expected five-minute evaluations are observed and aligned.
+  Missing cycle data remain *unverified*, never reported as zero signals.
+
+Warnings appear in Actions; configure the optional `DISCORD_WEBHOOK_URL`
+GitHub secret to also receive alerts for gaps, blocked exits and failed runs.
+GitHub's native scheduled workflows can be delayed, so these checks are
+**best-effort diagnostics, not an exchange-grade real-time monitor**. The
+broker-side protective stop remains the downside fallback and the existing
+cron-job.org dispatch should remain as a backup until real-session handoff
+is confirmed. The successor dispatch requires `actions: write` permission
+on the trading workflow's GitHub token.
+
+The observability layer does not read or output API credentials. Never commit
+secrets to the diagnostics records.
+
 ## Current research goal
 
-Continue paper execution until the clean Alpaca sample is large enough for
-meaningful analysis. Do not tune the strategy from a handful of trades. Review
-at roughly 25-30 completed trades, with a stronger decision point around 50.
+The initial 30-trade audit is documented in
+`audit/reports/2026-11-16-initial-audit.md`. The original historical SIP
+reconstruction was insufficiently faithful to select strategy variants, so
+there is no change to V9/V10/V11 setup or exit parameters. Continue collecting
+paper-only evidence with full setup scores, independent broker reconciliation,
+and execution-latency diagnostics. Reconsider strategy changes only using a
+separate, larger and non-overlapping validation sample.

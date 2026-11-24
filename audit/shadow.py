@@ -51,7 +51,7 @@ def run_session(frame: pd.DataFrame, session_date: date, close: datetime) -> dic
     # Refuse to label incomplete data a no-signal day.
     required = pd.date_range(
         pd.Timestamp(datetime.combine(session_date, time(9, 30), ET)),
-        cutoff, freq="5min",
+        min(cutoff, stamps[-1] + pd.Timedelta(minutes=5)), freq="5min",
     )
     missing = []
     for ts in required:
@@ -109,8 +109,13 @@ def run_session(frame: pd.DataFrame, session_date: date, close: datetime) -> dic
         entry_time = pd.Timestamp(selected["entry_at"])
         exit_price, reason, exit_time = None, None, None
         bars = session.loc[session["symbol"].eq(symbol)].sort_values("timestamp")
-        for _, candle in bars.loc[bars["timestamp"].ge(entry_time)].iterrows():
-            ts = candle["timestamp"]
+        for ts in pd.date_range(entry_time, cutoff, freq="5min"):
+            matching = bars.loc[bars["timestamp"].eq(ts) & bars["volume"].gt(0)]
+            if len(matching) != 1:
+                return {"date": session_date.isoformat(), "status": "incomplete_exit_data",
+                        "missing_bar": ts.isoformat(), "symbol": symbol, "policy": name,
+                        "policies": {}}
+            candle = matching.iloc[0]
             if ts >= cutoff:
                 # At the actual strategy's cutoff, execute at that bar's open.
                 reason, exit_price, exit_time = "end_of_day", float(candle["open"]), ts
@@ -126,7 +131,8 @@ def run_session(frame: pd.DataFrame, session_date: date, close: datetime) -> dic
                 exit_now, exit_reason = momentum_exit_signal(candle)
                 reason = exit_reason if exit_now else None
             if reason:
-                following = bars.loc[bars["timestamp"].eq(ts + pd.Timedelta(minutes=5))]
+                following = bars.loc[bars["timestamp"].eq(ts + pd.Timedelta(minutes=5))
+                                     & bars["volume"].gt(0)]
                 if following.empty:
                     return {"date": session_date.isoformat(), "status": "incomplete_exit_data",
                             "policies": {}}

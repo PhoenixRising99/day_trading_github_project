@@ -106,7 +106,7 @@ def run_session(frame: pd.DataFrame, session_date: date, close: datetime) -> dic
             continue
 
         symbol = selected["symbol"]
-        entry_time = pd.Timestamp(selected["entry_at"])
+        entry_time = pd.Timestamp(selected["entry_at"]).tz_convert(ET)
         exit_price, reason, exit_time = None, None, None
         bars = session.loc[session["symbol"].eq(symbol)].sort_values("timestamp")
         for ts in pd.date_range(entry_time, cutoff, freq="5min"):

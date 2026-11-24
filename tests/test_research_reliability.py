@@ -98,6 +98,20 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(result["status"], "incomplete_market_data")
         self.assertEqual(summarize([result])["complete_sessions"], 0)
 
+    def test_missing_unselected_symbol_after_entry_does_not_invalidate(self):
+        frame = complete_frame()
+        later = pd.Timestamp(datetime.combine(DAY, time(12), ET))
+        frame = frame.loc[~(frame["symbol"].eq("QQQ") & frame["timestamp"].eq(later))]
+        result = run_session(frame, DAY, datetime.combine(DAY, time(16), ET))
+        self.assertEqual(result["status"], "complete")
+
+    def test_missing_selected_symbol_before_exit_invalidates(self):
+        frame = complete_frame()
+        later = pd.Timestamp(datetime.combine(DAY, time(12), ET))
+        frame = frame.loc[~(frame["symbol"].eq("MSFT") & frame["timestamp"].eq(later))]
+        result = run_session(frame, DAY, datetime.combine(DAY, time(16), ET))
+        self.assertEqual(result["status"], "incomplete_exit_data")
+
     def test_volume_filter_can_choose_different_candidate(self):
         frame = complete_frame()
         # AAPL and MSFT tie at 13: AAPL fails volume, MSFT fails breakout.

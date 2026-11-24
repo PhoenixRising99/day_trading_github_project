@@ -12,6 +12,7 @@ from daytrading.config import CONFIG
 from daytrading.diagnostics import write_event
 from daytrading.data_fetch import fetch_intraday_data
 from daytrading.indicators import add_indicators
+from daytrading.market_snapshots import capture_frame
 from daytrading.position_state import load_open_position_state, save_open_position_state
 from daytrading.strategy import momentum_exit_signal
 
@@ -579,6 +580,7 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
             timezone=CONFIG.timezone,
         )
         data = add_indicators(data)
+        capture_frame(data, "monitor")
         symbol_data = data[data["symbol"] == symbol].sort_values("timestamp")
         latest = _latest_completed_row(symbol_data, now_et)
         if latest is not None:

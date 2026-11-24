@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "30 22 * * 1-5"
-  push:
-    branches:
-      - "chatgpt/research-reliability-20261124"
 
 permissions:
   contents: read
@@ -35,12 +32,7 @@ jobs:
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            python -m audit.shadow --start 2026-11-23 --end 2026-11-23
-          else
-            python -m audit.shadow
-          fi
+        run: python -m audit.shadow
       - name: Audit exchange-calendar coverage
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}

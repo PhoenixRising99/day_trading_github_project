@@ -193,3 +193,57 @@ there is no change to V9/V10/V11 setup or exit parameters. Continue collecting
 paper-only evidence with full setup scores, independent broker reconciliation,
 and execution-latency diagnostics. Reconsider strategy changes only using a
 separate, larger and non-overlapping validation sample.
+
+
+## Reliability and shadow research (November 24, 2026)
+
+- Broker reads retry transient connection, timeout, HTTP 429 and server
+  errors a bounded number of times. An unavailable or potentially truncated
+  order query raises an error; only a confirmed 404 on a client-order lookup
+  means not found. Order submissions are not blindly retried.
+- A failed cycle is reported and the next scheduled cycle attempts normal
+  reconciliation. State is committed first; a failed publication stops the
+  session. An unresolved sell or terminal partial fill requires attention.
+- Exit intent is stored before a sell submission, enabling reconciliation
+  if the request was accepted but its response was lost.
+- The weekly coverage audit uses Alpaca's exchange calendar starting
+  November 17, 2026. Missing entire sessions are distinct from no-signal
+  days; weekends, holidays and sessions not yet completed are not expected.
+- The paper trading session archives compressed full indicator/OHLCV input
+  frames (including warmup) for entry scans and open-position monitoring.
+  These files are in the trading-session artifacts, retained for 90 days
+  subject to repository limits; they are not committed to the Git history.
+- Shadow Strategy Research (Read Only) runs after market close, comparing
+  control, mandatory volume confirmation, minimum score 13, minimum score
+  14. Each policy has an independent one-trade-per-day simulation with the
+  same bars, ranking, exit rules, position sizing and modeled 5 bps each
+  way. It starts its prospective evaluation window on November 24, 2026.
+  It is a daily retrospective yfinance replay, not real-time shadow
+  observation: later historical corrections and modeled fills may differ
+  from the original snapshots. Incomplete sessions are excluded, not
+  classified as no signals. No orders are placed. Reports are downloadable
+  from the shadow research Actions artifacts (90 days); download/archive
+  reports periodically, since yfinance intraday history is limited.
+
+### External watchdog setup (requires cron-job.org account access)
+
+Keep the existing morning and afternoon trading dispatches. Add a **separate**
+cron-job.org HTTP POST job for:
+
+    https://api.github.com/repos/PhoenixRising99/day_trading_github_project/actions/workflows/paper_health_watchdog.yml/dispatches
+
+Use the same existing GitHub Actions dispatch authentication and JSON headers
+as the trading dispatches; request body:
+
+    {"ref":"main"}
+
+Schedule every 15 minutes on weekdays during 09:30–16:00 America/New_York
+(or use 09:00–16:59 to accommodate schedule granularity). Do not paste tokens
+into GitHub files, chat or logs. Test once and check HTTP 204 and the new
+Paper Trading Health Watchdog run in Actions. GitHub's native schedule remains
+a fallback; external dispatch reduces cron delays but cannot guarantee
+runner startup time. The watchdog does not submit orders.
+
+No production strategy thresholds or position sizes were changed by these
+research upgrades. The shadow comparison is exploratory; do not select
+a policy solely from the in-sample result.

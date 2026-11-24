@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from alpaca.common.exceptions import APIError
+from requests.exceptions import ConnectionError as RequestConnectionError, Timeout as RequestTimeout
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import (
@@ -42,6 +44,21 @@ TERMINAL_ORDER_STATUSES = {
     "suspended",
     "calculated",
 }
+
+
+def _read_with_retry(operation, *, attempts: int = 3):
+    """Retry only read calls on transient failures; never retry order submission."""
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except (APIError, RequestConnectionError, RequestTimeout) as exc:
+            code = getattr(exc, "status_code", None)
+            transient = isinstance(exc, (RequestConnectionError, RequestTimeout)) or (
+                code is not None and (code == 429 or 500 <= code <= 599)
+            )
+            if not transient or attempt + 1 >= attempts:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def _model_to_dict(obj: Any) -> dict:
@@ -131,7 +148,7 @@ class AlpacaPaperBroker:
         return TradingClient(self.api_key, self.secret_key, paper=True)
 
     def account_snapshot(self) -> dict:
-        data = _model_to_dict(self.client().get_account())
+        data = _model_to_dict(_read_with_retry(lambda: self.client().get_account()))
         wanted_keys = [
             "status",
             "currency",
@@ -158,7 +175,7 @@ class AlpacaPaperBroker:
 
     def clock_snapshot(self) -> dict:
         """Return Alpaca's authoritative market clock, including early closes."""
-        data = _model_to_dict(self.client().get_clock())
+        data = _model_to_dict(_read_with_retry(lambda: self.client().get_clock()))
         return {
             "timestamp": data.get("timestamp", ""),
             "is_open": bool(data.get("is_open", False)),
@@ -168,7 +185,7 @@ class AlpacaPaperBroker:
 
     def open_positions(self) -> list[dict]:
         rows: list[dict] = []
-        for pos in self.client().get_all_positions():
+        for pos in _read_with_retry(lambda: self.client().get_all_positions()):
             data = _model_to_dict(pos)
             rows.append(
                 {
@@ -187,40 +204,32 @@ class AlpacaPaperBroker:
         return rows
 
     def open_orders(self) -> list[dict]:
-        client = self.client()
-        try:
-            from alpaca.trading.enums import QueryOrderStatus
-
-            request = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)
-            orders = client.get_orders(filter=request)
-        except Exception:
-            try:
-                orders = client.get_orders()
-            except Exception:
-                orders = []
-
+        from alpaca.trading.enums import QueryOrderStatus
+        request = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=500)
+        orders = _read_with_retry(lambda: self.client().get_orders(filter=request))
+        if len(orders) >= 500:
+            raise AlpacaSafetyError("Open-order query may be truncated; reconciliation blocked.")
         return [self._order_snapshot(order) for order in orders]
 
     def all_orders(self) -> list[dict]:
-        """Return recent orders of every status for reconciliation/idempotency."""
-        client = self.client()
-        try:
-            from alpaca.trading.enums import QueryOrderStatus
-
-            request = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500)
-            orders = client.get_orders(filter=request)
-        except Exception:
-            try:
-                orders = client.get_orders()
-            except Exception:
-                orders = []
+        """Recent order history; unknown/truncated data must never imply no orders."""
+        from alpaca.trading.enums import QueryOrderStatus
+        from datetime import datetime, timedelta, timezone
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.ALL, limit=500,
+            after=datetime.now(timezone.utc) - timedelta(days=7),
+        )
+        orders = _read_with_retry(lambda: self.client().get_orders(filter=request))
+        if len(orders) >= 500:
+            raise AlpacaSafetyError("Recent order history may be truncated; reconciliation blocked.")
         return [self._order_snapshot(order) for order in orders]
 
     def strategy_entry_submitted_for_date(self, signal_date: str) -> bool:
         suffix = f"-{signal_date}"
         return any(
             str(order.get("client_order_id", "")).startswith("paper-entry-")
-            and str(order.get("client_order_id", "")).endswith(suffix)
+            and (str(order.get("client_order_id", "")).endswith(suffix)
+                 or suffix + "-retry-" in str(order.get("client_order_id", "")))
             for order in self.all_orders()
         )
 
@@ -250,15 +259,17 @@ class AlpacaPaperBroker:
     def get_order_snapshot(self, order_id: str) -> dict:
         if not order_id:
             return {}
-        return self._order_snapshot(self.client().get_order_by_id(order_id))
+        return self._order_snapshot(_read_with_retry(lambda: self.client().get_order_by_id(order_id)))
 
     def get_order_by_client_order_id(self, client_order_id: str) -> dict:
         if not client_order_id:
             return {}
         try:
-            order = self.client().get_order_by_client_id(client_order_id)
-        except Exception:
-            return {}
+            order = _read_with_retry(lambda: self.client().get_order_by_client_id(client_order_id))
+        except APIError as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
         return self._order_snapshot(order)
 
     def cancel_order(self, order_id: str, *, timeout_seconds: int = 20) -> dict:

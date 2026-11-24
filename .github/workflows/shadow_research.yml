@@ -1,0 +1,47 @@
+name: Shadow Strategy Research (Read Only)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 22 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-shadow-research
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ALPACA_PAPER: "true"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: Compare four research-only entry policies
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python -m audit.shadow
+      - name: Audit exchange-calendar coverage
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python -m audit.entry_coverage --exchange-calendar --output audit_outputs/entry_coverage.json
+      - name: Upload comparative results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shadow-research-${{ github.run_id }}
+          path: audit_outputs/
+          retention-days: 90

@@ -12,6 +12,7 @@ from daytrading.config import CONFIG
 from daytrading.diagnostics import write_event
 from daytrading.data_fetch import fetch_intraday_data
 from daytrading.indicators import add_indicators
+from daytrading.market_snapshots import capture_frame
 from daytrading.position_state import load_open_position_state, save_open_position_state
 from daytrading.strategy import momentum_exit_signal
 
@@ -400,6 +401,60 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
         )
 
     symbol = str(state.get("symbol", "")).upper().strip()
+    # Reconcile a potentially accepted exit before attempting new protection or
+    # submitting another sell. A timeout is not proof that the broker rejected it.
+    intent = state.get("exit_intent") or {}
+    if intent.get("client_order_id"):
+        prior = broker.get_order_by_client_order_id(intent["client_order_id"])
+        prior_status = str(prior.get("status", "")).lower()
+        if prior_status == "filled":
+            if symbol in open_positions:
+                return _write_and_return("alpaca_paper_position_monitor", {
+                    "paper_only": True, "action": "awaiting_broker_position_reconciliation",
+                    "reason": "exit_filled_position_snapshot_still_visible",
+                    "symbol": symbol, "timestamp_et": now_et.isoformat(),
+                }, timestamp_tag)
+            _record_closed_state(
+                state, reason=intent["reason"], now_et=now_et,
+                client_order_id=intent["client_order_id"],
+                filled_qty=_safe_float(prior.get("filled_qty")),
+                exit_fill_price=_safe_float(prior.get("filled_avg_price")),
+                order_status=prior_status, order_result={"final_order": prior},
+                evaluated_bar=intent.get("evaluated_bar") or "",
+                evaluated_close=intent.get("evaluated_close"),
+            )
+            return _write_and_return("alpaca_paper_position_monitor", {
+                "paper_only": True, "action": "reconciled_closed_position",
+                "reason": "previous_exit_filled", "symbol": symbol,
+                "timestamp_et": now_et.isoformat(),
+            }, timestamp_tag)
+        if prior and prior_status not in {"canceled", "cancelled", "expired", "rejected"}:
+            return _write_and_return("alpaca_paper_position_monitor", {
+                "paper_only": True, "action": "exit_pending_or_partial",
+                "reason": "previous_exit_not_terminal", "symbol": symbol,
+                "timestamp_et": now_et.isoformat(),
+            }, timestamp_tag)
+        if prior and _safe_float(prior.get("filled_qty")) > 0:
+            return _write_and_return("alpaca_paper_position_monitor", {
+                "paper_only": True, "action": "exit_pending_or_partial",
+                "reason": "terminal_partial_exit_requires_reconciliation",
+                "symbol": symbol, "timestamp_et": now_et.isoformat(),
+            }, timestamp_tag)
+    # A different active sell (including a retry ID or an untracked stop)
+    # must be reconciled before another order can be placed.
+    conflicting = [
+        o for o in broker.open_orders()
+        if str(o.get("symbol", "")).upper() == symbol
+        and str(o.get("side", "")).lower() == "sell"
+        and str(o.get("id", "")) != str(state.get("protective_stop_order_id") or "")
+        and str(o.get("client_order_id", "")) != str(state.get("protective_stop_client_order_id") or "")
+    ]
+    if conflicting:
+        return _write_and_return("alpaca_paper_position_monitor", {
+            "paper_only": True, "action": "exit_blocked_untracked_sell_orders",
+            "reason": "unresolved_sell_order", "symbol": symbol,
+            "timestamp_et": now_et.isoformat(),
+        }, timestamp_tag)
     protective = _protective_snapshot(broker, state)
 
     if symbol not in open_positions:
@@ -525,6 +580,7 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
             timezone=CONFIG.timezone,
         )
         data = add_indicators(data)
+        capture_frame(data, "monitor")
         symbol_data = data[data["symbol"] == symbol].sort_values("timestamp")
         latest = _latest_completed_row(symbol_data, now_et)
         if latest is not None:
@@ -678,6 +734,13 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
         )
 
     client_order_id = f"paper-exit-{symbol}-{state.get('signal_date', '')}"
+    state["exit_intent"] = {
+        "client_order_id": client_order_id, "reason": exit_reason,
+        "evaluated_bar": str(latest["timestamp"]) if latest is not None else "",
+        "evaluated_close": float(latest["close"]) if latest is not None else None,
+        "decision_at": now_et.isoformat(),
+    }
+    save_open_position_state(state)
     order_result = broker.submit_market_sell(
         symbol=symbol,
         qty=qty,
@@ -706,18 +769,15 @@ def run_position_monitor(*, period: str, confirm: str) -> dict[str, Any]:
         }
         save_open_position_state(state)
 
-        # Re-protect any residual shares after a partial/pending market exit.
-        try:
-            _ensure_protective_stop(
-                broker,
-                state,
-                qty=remaining_qty,
-                confirm=confirm,
-            )
-        except Exception as exc:  # noqa: BLE001
-            state["protective_stop_status"] = "repair_failed_after_partial_exit"
-            state["protective_stop_error"] = str(exc)
-            save_open_position_state(state)
+        # Do not place a competing stop while an accepted market sell can
+        # still execute. A terminal partial fill needs explicit accounting.
+        if final_status in {"canceled", "cancelled", "expired", "rejected"}:
+            try:
+                _ensure_protective_stop(broker, state, qty=remaining_qty, confirm=confirm)
+            except Exception as exc:
+                state["protective_stop_status"] = "repair_failed_after_partial_exit"
+                state["protective_stop_error"] = type(exc).__name__
+                save_open_position_state(state)
 
         return _write_and_return(
             "alpaca_paper_position_monitor",

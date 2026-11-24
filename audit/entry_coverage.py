@@ -33,7 +33,7 @@ def load_events(directory: Path = DIAGNOSTICS_DIR) -> list[dict]:
     return events
 
 
-def summarize_coverage(events: list[dict]) -> dict:
+def summarize_coverage(events: list[dict], expected_sessions=None) -> dict:
     by_day = defaultdict(list)
     for event in events:
         if event.get("kind") != "entry":
@@ -44,6 +44,8 @@ def summarize_coverage(events: list[dict]) -> dict:
         stamp = datetime.fromisoformat(timestamp).astimezone(ET)
         by_day[stamp.date().isoformat()].append(event)
     days = []
+    for day in expected_sessions or []:
+        by_day.setdefault(day, [])
     for day, entries in sorted(by_day.items()):
         entries.sort(key=lambda e: e.get("timestamp_et", ""))
         scans = [e for e in entries if e.get("scan_summary") is not None]
@@ -80,8 +82,9 @@ def summarize_coverage(events: list[dict]) -> dict:
         missing_context = sum(not (e.get("market_data_alignment") or {}).get(
             "market_context_aligned", False) for e in scans)
         coverage = (
+            "missing_entire_session" if not entries else
             "complete_observed_no_signal" if not filled and not missed and not blocked
-            and all(e.get("outcome") == "no_active_signal" for e in entries)
+            and len(scans) >= len(expected) and all(e.get("outcome") == "no_active_signal" for e in entries)
             and not unavailable and not missing_context
             else "trade_recorded" if filled else "incomplete_or_unverified"
         )
@@ -101,13 +104,15 @@ def summarize_coverage(events: list[dict]) -> dict:
             "outcomes": dict(Counter(e.get("outcome", "") for e in entries)),
         })
     return {
-        "days_with_entry_records": len(days),
-        "days_without_trades": sum(not d["order_filled"] for d in days),
+        "days_with_entry_records": sum(d["entry_decisions"] > 0 for d in days),
+        "days_without_trades": sum(d["entry_decisions"] > 0 and not d["order_filled"] for d in days),
+        "calendar_sessions_checked": len(expected_sessions) if expected_sessions is not None else None,
+        "missing_entire_sessions": [d["date"] for d in days if d["coverage_classification"] == "missing_entire_session"],
         "fully_observed_no_signal_days": sum(
             d["coverage_classification"] == "complete_observed_no_signal" for d in days
         ),
         "days_unverified": sum(
-            d["coverage_classification"] == "incomplete_or_unverified" for d in days
+            d["coverage_classification"] in {"incomplete_or_unverified", "missing_entire_session"} for d in days
         ),
         "eligible_unfilled_candidate_count": sum(
             len(d["eligible_unfilled_candidates"]) for d in days
@@ -121,8 +126,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only paper scanner coverage report")
     parser.add_argument("--directory", type=Path, default=DIAGNOSTICS_DIR)
     parser.add_argument("--output", type=Path, default=Path("audit_outputs/entry_coverage.json"))
+    parser.add_argument("--exchange-calendar", action="store_true",
+                        help="Check every completed exchange session since durable logging began.")
     args = parser.parse_args()
-    result = summarize_coverage(load_events(args.directory))
+    expected = None
+    if args.exchange_calendar:
+        from audit.exchange_calendar import completed_sessions, LOGGING_START
+        expected = completed_sessions(LOGGING_START, datetime.now(ET).date())
+    result = summarize_coverage(load_events(args.directory), expected)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print("ENTRY_COVERAGE_JSON=" + json.dumps({

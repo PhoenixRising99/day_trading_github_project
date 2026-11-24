@@ -9,6 +9,7 @@ import pandas as pd
 from daytrading.config import CONFIG, STRATEGY_PARAMS, WATCHLIST, StrategyParams, TradingConfig
 from daytrading.data_fetch import fetch_intraday_data
 from daytrading.indicators import add_indicators
+from daytrading.market_snapshots import capture_frame
 from daytrading.strategy import (
     calculate_position_size,
     calculate_stop_and_target,
@@ -297,6 +298,7 @@ def paper_scan(
         timezone=config.timezone,
     )
     data = add_indicators(data)
+    capture_frame(data, "entry")
 
     latest_rows = _latest_completed_rows(data, config).copy()
 

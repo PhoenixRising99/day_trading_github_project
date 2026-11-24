@@ -35,7 +35,12 @@ jobs:
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-        run: python -m audit.shadow
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            python -m audit.shadow --start 2026-11-23 --end 2026-11-23
+          else
+            python -m audit.shadow
+          fi
       - name: Upload comparative results
         if: always()
         uses: actions/upload-artifact@v4

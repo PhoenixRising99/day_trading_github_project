@@ -36,7 +36,7 @@ POLICIES = {
 
 def run_session(frame: pd.DataFrame, session_date: date, close: datetime) -> dict:
     """One independent simulated trade per policy, same bar data and friction."""
-    cutoff = pd.Timestamp(close) - pd.Timedelta(minutes=5)
+    cutoff = pd.Timestamp(close).tz_convert(ET) - pd.Timedelta(minutes=5)
     session = frame[frame["timestamp"].dt.date.eq(session_date)].copy()
     session = session.sort_values(["timestamp", "symbol"])
     # Match actual scheduler: wall-clock scans at 10:15–10:55 ET see the
